@@ -21,15 +21,19 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
-import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.ChannelPipeline;
 import io.netty.channel.DefaultChannelPromise;
 import io.netty.channel.EventLoopGroup;
+import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.channel.epoll.EpollEventLoopGroup;
 import io.netty.channel.epoll.EpollSocketChannel;
+import io.netty.channel.kqueue.KQueueEventLoopGroup;
+import io.netty.channel.kqueue.KQueueSocketChannel;
+import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
+import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.codec.http.DefaultFullHttpRequest;
 import io.netty.handler.codec.http.DefaultHttpHeaders;
 import io.netty.handler.codec.http.FullHttpRequest;
@@ -38,11 +42,12 @@ import io.netty.handler.codec.http.HttpContent;
 import io.netty.handler.codec.http.HttpContentDecompressor;
 import io.netty.handler.codec.http.HttpHeaders;
 import io.netty.handler.codec.http.HttpMethod;
+import io.netty.handler.codec.http.HttpObject;
 import io.netty.handler.codec.http.HttpResponse;
 import io.netty.handler.codec.http.HttpVersion;
 import io.netty.handler.codec.http.LastHttpContent;
-import io.netty.handler.timeout.IdleStateHandler;
-import io.netty.util.AttributeKey;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.springframework.stereotype.Service;
@@ -62,20 +67,25 @@ public class LoaderService {
 
     private static final Log LOGGER = LogFactory.getLog(LoaderService.class);
 
-    private final AtomicLong start = new AtomicLong(0);
-    private final AttributeKey<AtomicLong> attrTotalSize = AttributeKey.newInstance("totalSize");
-    private final AttributeKey<AtomicInteger> attrResponseCounter = AttributeKey.newInstance("responseCounter");
-    private final AttributeKey<AtomicBoolean> attrFinished = AttributeKey.newInstance("finished");
-    final AtomicBoolean finished = new AtomicBoolean(false);
-    final AtomicLong totalSize = new AtomicLong(0L);
-    final AtomicInteger responseCounter = new AtomicInteger(0);
+    private static final boolean IS_MAC   = isMac();
+    private static final boolean IS_LINUX = isLinux();
 
-    private final int numConn = 10;
-    private final int durationSec = 30;
+    private static final int NUM_CORES = Runtime.getRuntime().availableProcessors();
+
+    private final AtomicBoolean finished = new AtomicBoolean(false);
+    private final AtomicLong totalSize = new AtomicLong(0L);
+    private final AtomicInteger reqCounter = new AtomicInteger(0);
+    private final AtomicInteger responseCounter = new AtomicInteger(0);
+    private final AtomicInteger channelsActive = new AtomicInteger(0);
+
+    private final int numConn = Integer.parseInt(System.getProperty("taurina.numconn", "100"));
+    private final int durationSec = Integer.parseInt(System.getProperty("taurina.duration", "10"));
     private final HttpMethod method = HttpMethod.GET;
-    private final String host = "127.0.0.1";
-    private final int port = 3000;
-    private final String path = "/";
+    private final String host = System.getProperty("taurina.targethost", "127.0.0.1");
+    private final int port = Integer.parseInt(System.getProperty("taurina.targetport", "8030"));
+    private final String path = System.getProperty("taurina.targetpath", "/");
+    private final int threads = Integer.parseInt(System.getProperty("taurina.threads",
+                                        String.valueOf(NUM_CORES > numConn ? numConn : NUM_CORES)));
 
     private final HttpHeaders headers = new DefaultHttpHeaders().add(HOST, host + (port > 0 ? ":" + port : ""));
     private final FullHttpRequest request = new DefaultFullHttpRequest(
@@ -83,18 +93,14 @@ public class LoaderService {
 
     @PostConstruct
     public void start() {
+        final EventLoopGroup group = getEventLoopGroup(threads);
+
         Bootstrap bootstrap = new Bootstrap();
-        final EventLoopGroup group = new EpollEventLoopGroup(Runtime.getRuntime().availableProcessors());
-
-
         bootstrap.
-                group(new EpollEventLoopGroup(Runtime.getRuntime().availableProcessors())).
-                channel(EpollSocketChannel.class).
+                group(group).
+                channel(getSocketChannelClass()).
                 option(ChannelOption.SO_KEEPALIVE, true).
-                option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 2000).
-//                attr(attrTotalSize, totalSize).
-//                attr(attrResponseCounter, responseCounter).
-//                attr(attrFinished, finished).
+                option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 60000).
                 handler(initializer());
 
         Channel[] channels = new Channel[numConn];
@@ -106,22 +112,51 @@ public class LoaderService {
             }
 
             new ScheduledThreadPoolExecutor(1).schedule(() -> finished.set(true), durationSec, TimeUnit.SECONDS);
-            start.set(System.currentTimeMillis());
-            while (System.currentTimeMillis() - start.get() < durationSec * 1000L) {
+            long start = System.currentTimeMillis();
+            final ExecutorService threadPool = Executors.newCachedThreadPool();
+            while (!finished.get()) {
                 final CountDownLatch latch = new CountDownLatch(channels.length - 1);
                 for (Channel channel : channels) {
-                    channel.writeAndFlush(request.copy(), new DefaultChannelPromise(channel).addListener((future -> latch.countDown())));
+                    threadPool.execute(() ->
+                        channel.writeAndFlush(request.retainedDuplicate(),
+                            new DefaultChannelPromise(channel).addListener(future -> {
+                                latch.countDown();
+                                if (future.isSuccess()) {
+                                    reqCounter.incrementAndGet();
+                                }
+                            }))
+                    );
                 }
                 latch.await(1, TimeUnit.SECONDS);
             }
-            for (Channel channel: channels) {
-                channel.closeFuture().sync();
+            LOGGER.error(">--> channels actives: " + channelsActive.get());
+
+            final CountDownLatch latch = new CountDownLatch(channels.length - 1);
+            for (Channel channel : channels) {
+                threadPool.execute(() -> {
+                    try {
+                        if (channel.isOpen()) {
+                            LOGGER.warn("channel " + channel + " is open. closing.");
+                        } else {
+                            LOGGER.warn("channel " + channel + " is NOT open.");
+                        }
+                        channel.closeFuture().sync();
+                    } catch (InterruptedException e) {
+                        LOGGER.error(e.getMessage(), e);
+                    } finally {
+                        latch.countDown();
+                    }
+                });
             }
-            long totalTime = (System.currentTimeMillis() - start.get()) / 1000;
+            latch.await(10, TimeUnit.SECONDS);
+
+            long totalTime = (System.currentTimeMillis() - start) / 1000;
             LOGGER.warn(">>> " +
                     "total time (s): " + totalTime);
             LOGGER.warn(">>> " +
-                    "responseCounter: " + responseCounter.get() + " / totalSize: " + (totalSize.get() / 1024));
+                    "total requests: " + reqCounter.get());
+            LOGGER.warn(">>> " +
+                    "total responses: " + responseCounter.get() + " / totalSize: " + (totalSize.get() / 1024));
             LOGGER.warn(">>> " +
                     "avg response: " + responseCounter.get() / totalTime + " / " +
                     "avg size KB/s: " + (totalSize.get() / 1024) / totalTime);
@@ -139,26 +174,25 @@ public class LoaderService {
             @Override
             protected void initChannel(SocketChannel channel) throws Exception {
                 final ChannelPipeline pipeline = channel.pipeline();
-                pipeline.addLast(new IdleStateHandler(10, 10, 0, TimeUnit.SECONDS));
+//                pipeline.addLast(new IdleStateHandler(10, 10, 0, TimeUnit.SECONDS));
                 pipeline.addLast(new HttpClientCodec());
                 pipeline.addLast(new HttpContentDecompressor());
-                pipeline.addLast("inbound", new ChannelInboundHandlerAdapter(){
-
-//                    private AtomicInteger responseCounter = null;
-//                    private AtomicLong totalSize = null;
-//                    private AtomicBoolean finished = null;
-//
-//                    @Override
-//                    public void channelRegistered(ChannelHandlerContext ctx) throws Exception {
-//                        responseCounter = ctx.channel().attr(attrResponseCounter).get();
-//                        totalSize = ctx.channel().attr(attrTotalSize).get();
-//                        finished = ctx.channel().attr(attrFinished).get();
-//
-//                        super.channelRegistered(ctx);
-//                    }
+                pipeline.addLast("inbound", new SimpleChannelInboundHandler<HttpObject>(){
 
                     @Override
-                    public void channelRead(ChannelHandlerContext channelHandlerContext, Object msg) throws Exception {
+                    public void channelActive(ChannelHandlerContext ctx) throws Exception {
+                        channelsActive.incrementAndGet();
+                        super.channelActive(ctx);
+                    }
+
+                    @Override
+                    public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+                        channelsActive.decrementAndGet();
+                        super.channelInactive(ctx);
+                    }
+
+                    @Override
+                    public void channelRead0(ChannelHandlerContext channelHandlerContext, HttpObject msg) throws Exception {
                         if (msg instanceof HttpResponse) {
                             responseCounter.incrementAndGet();
                             HttpResponse response = (HttpResponse) msg;
@@ -171,7 +205,7 @@ public class LoaderService {
                                 totalSize.addAndGet(byteBuf.readableBytes());
                             }
                             if (content instanceof LastHttpContent && finished.get()) {
-                                channelHandlerContext.channel().close();
+//                                channelHandlerContext.close();
                             }
                         }
                     }
@@ -179,10 +213,46 @@ public class LoaderService {
                     @Override
                     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
                         LOGGER.error(cause.getMessage(), cause);
-                        super.exceptionCaught(ctx, cause);
                     }
                 });
             }
         };
     }
+
+    private EventLoopGroup getEventLoopGroup(int numCores) {
+        // @formatter:off
+        return IS_MAC   ? new KQueueEventLoopGroup(numCores) :
+               IS_LINUX ? new EpollEventLoopGroup(numCores) :
+                          new NioEventLoopGroup(numCores);
+        // @formatter:on
+    }
+
+    private Class<? extends Channel> getSocketChannelClass() {
+        // @formatter:off
+        return IS_MAC   ? KQueueSocketChannel.class :
+               IS_LINUX ? EpollSocketChannel.class :
+                          NioSocketChannel.class;
+        // @formatter:on
+    }
+
+    private static String getOS() {
+        return System.getProperty("os.name", "UNDEF").toLowerCase();
+    }
+
+    private static boolean isMac() {
+        boolean result = getOS().startsWith("mac");
+        if (result) {
+            LOGGER.warn("I'm Mac");
+        }
+        return result;
+    }
+
+    private static boolean isLinux() {
+        boolean result = getOS().startsWith("linux");
+        if (result) {
+            LOGGER.warn("I'm Linux");
+        }
+        return result;
+    }
+
 }
