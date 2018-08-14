@@ -78,14 +78,14 @@ public class LoaderService {
     private final AtomicInteger responseCounter = new AtomicInteger(0);
     private final AtomicInteger channelsActive = new AtomicInteger(0);
 
-    private final int numConn = Integer.parseInt(System.getProperty("taurina.numconn", "100"));
-    private final int durationSec = Integer.parseInt(System.getProperty("taurina.duration", "10"));
+    private final int numConn = Integer.parseInt(System.getProperty("taurina.numconn", "1000"));
+    private final int durationSec = Integer.parseInt(System.getProperty("taurina.duration", "30"));
     private final HttpMethod method = HttpMethod.GET;
     private final String host = System.getProperty("taurina.targethost", "127.0.0.1");
-    private final int port = Integer.parseInt(System.getProperty("taurina.targetport", "8030"));
-    private final String path = System.getProperty("taurina.targetpath", "/");
-    private final int threads = Integer.parseInt(System.getProperty("taurina.threads",
-                                        String.valueOf(NUM_CORES > numConn ? numConn : NUM_CORES)));
+    private final int port = Integer.parseInt(System.getProperty("taurina.targetport", "8040"));
+    private final String path = System.getProperty("taurina.targetpath", "/base64/QQ%3D%3D");
+    private final int threads = Integer.parseInt(System.getProperty("taurina.threads", "1"));
+//                                        String.valueOf(NUM_CORES > numConn ? numConn : NUM_CORES)));
 
     private final HttpHeaders headers = new DefaultHttpHeaders().add(HOST, host + (port > 0 ? ":" + port : ""));
     private final FullHttpRequest request = new DefaultFullHttpRequest(
@@ -135,11 +135,11 @@ public class LoaderService {
             for (Channel channel : channels) {
                 threadPool.execute(() -> {
                     try {
-                        if (channel.isOpen()) {
-                            LOGGER.warn("channel " + channel + " is open. closing.");
-                        } else {
-                            LOGGER.warn("channel " + channel + " is NOT open.");
-                        }
+//                        if (channel.isOpen()) {
+//                            LOGGER.warn("channel " + channel + " is open. closing.");
+//                        } else {
+//                            LOGGER.warn("channel " + channel + " is NOT open.");
+//                        }
                         channel.closeFuture().sync();
                     } catch (InterruptedException e) {
                         LOGGER.error(e.getMessage(), e);
