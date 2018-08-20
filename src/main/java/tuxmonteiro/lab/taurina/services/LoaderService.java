@@ -24,7 +24,6 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.ChannelPipeline;
-import io.netty.channel.EventLoop;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.channel.epoll.EpollEventLoopGroup;
@@ -110,7 +109,7 @@ public class LoaderService {
 
         try {
             for (int chanId = 0; chanId < numConn; chanId++) {
-                newChannel(bootstrap, channels, chanId);
+                channels[chanId] = newChannel(bootstrap);
             }
 
             start.set(System.currentTimeMillis());
@@ -119,10 +118,11 @@ public class LoaderService {
             while (!finished.get()) {
                 for (int chanId = 0; chanId < numConn; chanId++) {
                     if (!(channels[chanId].isOpen() && channels[chanId].isActive())) {
-                        newChannel(bootstrap, channels, chanId);
+                        Channel chan = channels[chanId] = newChannel(bootstrap);
+                        chan.writeAndFlush(request.copy());
                     }
                 }
-                TimeUnit.MILLISECONDS.sleep(100L);
+                TimeUnit.MILLISECONDS.sleep(1L);
             }
 
             if (channelsActive.get() < numConn) {
@@ -165,15 +165,15 @@ public class LoaderService {
         }
     }
 
-    private void newChannel(final Bootstrap bootstrap, final Channel[] channels, int chanId) throws InterruptedException {
-        final Bootstrap clone = bootstrap.clone();
-        final Channel chan = channels[chanId] = clone.connect(host, port).sync().channel();
-        final EventLoop eventLoop = channels[chanId].eventLoop();
-        eventLoop.scheduleAtFixedRate(() -> {
-            if (!finished.get()) {
-                chan.writeAndFlush(request.copy());
+    private Channel newChannel(final Bootstrap bootstrap) throws InterruptedException {
+        final Channel channel = bootstrap.clone().connect(host, port).sync().channel();
+        channel.eventLoop().scheduleAtFixedRate(() -> {
+            if (channel.isActive() && !finished.get()) {
+                channel.writeAndFlush(request.copy());
             }
         }, 1, 1, TimeUnit.MICROSECONDS);
+
+        return channel;
     }
 
     private static class MyHandler extends SimpleChannelInboundHandler<HttpObject> {
