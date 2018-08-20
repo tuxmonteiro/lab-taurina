@@ -46,9 +46,12 @@ import io.netty.handler.codec.http.HttpVersion;
 import io.netty.handler.codec.http.LastHttpContent;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.springframework.scheduling.annotation.Async;
+import org.springframework.scheduling.annotation.EnableAsync;
+import org.springframework.scheduling.annotation.EnableScheduling;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
-import javax.annotation.PostConstruct;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -58,6 +61,8 @@ import java.util.concurrent.atomic.AtomicLong;
 import static io.netty.handler.codec.http.HttpHeaderNames.HOST;
 
 @Service
+@EnableAsync
+@EnableScheduling
 public class LoaderService {
 
     private static final Log LOGGER = LogFactory.getLog(LoaderService.class);
@@ -77,8 +82,6 @@ public class LoaderService {
     private final HttpMethod method = HttpMethod.GET;
     private final String host = System.getProperty("taurina.targethost", "127.0.0.1");
     private final int port = Integer.parseInt(System.getProperty("taurina.targetport", "8030"));
-//    private final int port = Integer.parseInt(System.getProperty("taurina.targetport", "8040"));
-//    private final String path = System.getProperty("taurina.targetpath", "/base64/QQ%3D%3D");
     private final String path = System.getProperty("taurina.targetpath", "/");
     private final int threads = Integer.parseInt(System.getProperty("taurina.threads",
                                         String.valueOf(NUM_CORES > numConn ? numConn : NUM_CORES)));
@@ -89,8 +92,14 @@ public class LoaderService {
 
     private AtomicLong start = new AtomicLong(0L);
 
-    @PostConstruct
+    @Async
+    @Scheduled(fixedRate = 5_000L)
     public void start() {
+        if (start.get() != 0) {
+            return;
+        } else {
+            start.set(-1);
+        }
         LOGGER.info("Using " + threads + " thread(s)");
 
         final EventLoopGroup group = getEventLoopGroup(threads);
@@ -115,11 +124,11 @@ public class LoaderService {
             start.set(System.currentTimeMillis());
             group.schedule(() -> finished.set(true), durationSec, TimeUnit.SECONDS);
 
+            // reconnect if necessary
             while (!finished.get()) {
                 for (int chanId = 0; chanId < numConn; chanId++) {
                     if (!(channels[chanId].isOpen() && channels[chanId].isActive())) {
-                        Channel chan = channels[chanId] = newChannel(bootstrap);
-                        chan.writeAndFlush(request.copy());
+                        channels[chanId] = newChannel(bootstrap);
                     }
                 }
                 TimeUnit.MILLISECONDS.sleep(1L);
@@ -263,7 +272,7 @@ public class LoaderService {
     private static boolean isMac() {
         boolean result = getOS().startsWith("mac");
         if (result) {
-            LOGGER.warn("I'm Mac");
+            LOGGER.warn("Hello. I'm Mac");
         }
         return result;
     }
@@ -271,7 +280,7 @@ public class LoaderService {
     private static boolean isLinux() {
         boolean result = getOS().startsWith("linux");
         if (result) {
-            LOGGER.warn("I'm Linux");
+            LOGGER.warn("Hello. I'm Linux");
         }
         return result;
     }
