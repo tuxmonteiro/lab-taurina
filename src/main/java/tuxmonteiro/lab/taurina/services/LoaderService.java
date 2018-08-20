@@ -24,6 +24,7 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.ChannelPipeline;
+import io.netty.channel.EventLoop;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.channel.epoll.EpollEventLoopGroup;
@@ -49,8 +50,6 @@ import org.apache.commons.logging.LogFactory;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.PostConstruct;
-import java.util.Timer;
-import java.util.TimerTask;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -71,7 +70,6 @@ public class LoaderService {
 
     private final AtomicBoolean finished = new AtomicBoolean(false);
     private final AtomicLong totalSize = new AtomicLong(0L);
-    private final AtomicInteger reqCounter = new AtomicInteger(0);
     private final AtomicInteger responseCounter = new AtomicInteger(0);
     private final AtomicInteger channelsActive = new AtomicInteger(0);
 
@@ -104,37 +102,29 @@ public class LoaderService {
                 channel(getSocketChannelClass()).
                 option(ChannelOption.SO_KEEPALIVE, true).
                 option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 60000).
+                option(ChannelOption.TCP_NODELAY, true).
+                option(ChannelOption.SO_REUSEADDR, true).
                 handler(initializer());
 
         Channel[] channels = new Channel[numConn];
 
         try {
             for (int chanId = 0; chanId < numConn; chanId++) {
-                Bootstrap clone = bootstrap.clone();
-                channels[chanId] = clone.connect(host, port).sync().channel();
+                newChannel(bootstrap, channels, chanId);
             }
 
             start.set(System.currentTimeMillis());
-            new Timer().schedule(new TimerTask() {
-                @Override
-                public void run() {
-                    finished.set(true);
-                }
-            }, durationSec * 1000);
+            group.schedule(() -> finished.set(true), durationSec, TimeUnit.SECONDS);
 
             while (!finished.get()) {
                 for (int chanId = 0; chanId < numConn; chanId++) {
-                    try {
-                        channels[chanId].writeAndFlush(request.copy());
-                    } finally {
-                        if (!(channels[chanId].isOpen() && channels[chanId].isActive())) {
-                            Bootstrap clone = bootstrap.clone();
-                            channels[chanId] = clone.connect(host, port).sync().channel();
-                            channels[chanId].writeAndFlush(request.copy());
-                        }
+                    if (!(channels[chanId].isOpen() && channels[chanId].isActive())) {
+                        newChannel(bootstrap, channels, chanId);
                     }
                 }
+                TimeUnit.MILLISECONDS.sleep(100L);
             }
+
             if (channelsActive.get() < numConn) {
                 LOGGER.error(">--> channels actives: " + channelsActive.get());
             }
@@ -173,6 +163,17 @@ public class LoaderService {
                 group.shutdownGracefully();
             }
         }
+    }
+
+    private void newChannel(final Bootstrap bootstrap, final Channel[] channels, int chanId) throws InterruptedException {
+        final Bootstrap clone = bootstrap.clone();
+        final Channel chan = channels[chanId] = clone.connect(host, port).sync().channel();
+        final EventLoop eventLoop = channels[chanId].eventLoop();
+        eventLoop.scheduleAtFixedRate(() -> {
+            if (!finished.get()) {
+                chan.writeAndFlush(request.copy());
+            }
+        }, 1, 1, TimeUnit.MICROSECONDS);
     }
 
     private static class MyHandler extends SimpleChannelInboundHandler<HttpObject> {
@@ -215,7 +216,7 @@ public class LoaderService {
                     totalSize.addAndGet(byteBuf.readableBytes());
                 }
                 if (content instanceof LastHttpContent && finished.get()) {
-//                                channelHandlerContext.close();
+                    channelHandlerContext.close();
                 }
             }
         }
