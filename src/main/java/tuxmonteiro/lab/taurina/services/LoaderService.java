@@ -20,13 +20,10 @@ import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
-import io.netty.channel.ChannelFuture;
-import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.ChannelPipeline;
-import io.netty.channel.DefaultChannelPromise;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.channel.epoll.EpollEventLoopGroup;
@@ -41,27 +38,20 @@ import io.netty.handler.codec.http.DefaultHttpHeaders;
 import io.netty.handler.codec.http.FullHttpRequest;
 import io.netty.handler.codec.http.HttpClientCodec;
 import io.netty.handler.codec.http.HttpContent;
-import io.netty.handler.codec.http.HttpContentDecompressor;
 import io.netty.handler.codec.http.HttpHeaders;
 import io.netty.handler.codec.http.HttpMethod;
 import io.netty.handler.codec.http.HttpObject;
 import io.netty.handler.codec.http.HttpResponse;
 import io.netty.handler.codec.http.HttpVersion;
 import io.netty.handler.codec.http.LastHttpContent;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Timer;
-import java.util.TimerTask;
-import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.PostConstruct;
+import java.util.Timer;
+import java.util.TimerTask;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -90,16 +80,22 @@ public class LoaderService {
     private final HttpMethod method = HttpMethod.GET;
     private final String host = System.getProperty("taurina.targethost", "127.0.0.1");
     private final int port = Integer.parseInt(System.getProperty("taurina.targetport", "8030"));
+//    private final int port = Integer.parseInt(System.getProperty("taurina.targetport", "8040"));
+//    private final String path = System.getProperty("taurina.targetpath", "/base64/QQ%3D%3D");
     private final String path = System.getProperty("taurina.targetpath", "/");
-    private final int threads = Integer.parseInt(System.getProperty("taurina.threads", "1"));
-//                                        String.valueOf(NUM_CORES > numConn ? numConn : NUM_CORES)));
+    private final int threads = Integer.parseInt(System.getProperty("taurina.threads",
+                                        String.valueOf(NUM_CORES > numConn ? numConn : NUM_CORES)));
 
     private final HttpHeaders headers = new DefaultHttpHeaders().add(HOST, host + (port > 0 ? ":" + port : ""));
     private final FullHttpRequest request = new DefaultFullHttpRequest(
             HttpVersion.HTTP_1_1, method, path, Unpooled.buffer(0), headers, new DefaultHttpHeaders());
 
+    private AtomicLong start = new AtomicLong(0L);
+
     @PostConstruct
     public void start() {
+        LOGGER.info("Using " + threads + " thread(s)");
+
         final EventLoopGroup group = getEventLoopGroup(threads);
 
         Bootstrap bootstrap = new Bootstrap();
@@ -110,87 +106,123 @@ public class LoaderService {
                 option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 60000).
                 handler(initializer());
 
-        final List<Channel> channels = new CopyOnWriteArrayList<>();
+        Channel[] channels = new Channel[numConn];
 
         try {
-            for(int chanId = 0; chanId < numConn; chanId++) {
+            for (int chanId = 0; chanId < numConn; chanId++) {
                 Bootstrap clone = bootstrap.clone();
-                channels.add(clone.connect(host, port).sync().channel());
+                channels[chanId] = clone.connect(host, port).sync().channel();
             }
 
-            new ScheduledThreadPoolExecutor(1).schedule(() -> finished.set(true), durationSec, TimeUnit.SECONDS);
-            long start = System.currentTimeMillis();
-            final ExecutorService threadPool = Executors.newCachedThreadPool();
-            while (!finished.get()) {
-                final CountDownLatch latch = new CountDownLatch(channels.size() - 1);
-                for (Channel channel : channels) {
-                    threadPool.execute(() -> {
-                            if (channel.isOpen()) {
-                                channel.writeAndFlush(request.retainedDuplicate(),
-                                    new DefaultChannelPromise(channel).addListener(future -> {
-                                        latch.countDown();
-                                        if (future.isSuccess()) {
-                                            reqCounter.incrementAndGet();
-                                        }
-                                    }));
-                            } else {
-                                Bootstrap clone = bootstrap.clone();
-                                try {
-                                    Channel newChannel = clone.connect(host, port).sync().channel();
-                                    channels.add(newChannel);
-                                    newChannel.writeAndFlush(request.retainedDuplicate(),
-                                        new DefaultChannelPromise(newChannel).addListener(future -> {
-                                            latch.countDown();
-                                            if (future.isSuccess()) {
-                                                reqCounter.incrementAndGet();
-                                            }
-                                    }));
-                                } catch (InterruptedException e) {
-                                    LOGGER.error(e.getMessage(), e);
-                                }
-                            }
-                        }
-                    );
+            start.set(System.currentTimeMillis());
+            new Timer().schedule(new TimerTask() {
+                @Override
+                public void run() {
+                    finished.set(true);
                 }
-                latch.await(1, TimeUnit.SECONDS);
-            }
-            LOGGER.error(">--> channels actives: " + channelsActive.get());
+            }, durationSec * 1000);
 
-            final CountDownLatch latch = new CountDownLatch(channels.size() - 1);
-            for (Channel channel : channels) {
-                threadPool.execute(() -> {
+            while (!finished.get()) {
+                for (int chanId = 0; chanId < numConn; chanId++) {
                     try {
-//                        if (channel.isOpen()) {
-//                            LOGGER.warn("channel " + channel + " is open. closing.");
-//                        } else {
-//                            LOGGER.warn("channel " + channel + " is NOT open.");
-//                        }
-                        channel.closeFuture().sync();
-                    } catch (InterruptedException e) {
-                        LOGGER.error(e.getMessage(), e);
+                        channels[chanId].writeAndFlush(request.copy());
                     } finally {
-                        latch.countDown();
+                        if (!(channels[chanId].isOpen() && channels[chanId].isActive())) {
+                            Bootstrap clone = bootstrap.clone();
+                            channels[chanId] = clone.connect(host, port).sync().channel();
+                            channels[chanId].writeAndFlush(request.copy());
+                        }
+                    }
+                }
+            }
+            if (channelsActive.get() < numConn) {
+                LOGGER.error(">--> channels actives: " + channelsActive.get());
+            }
+
+            long totalTime = (System.currentTimeMillis() - start.get()) / 1_000L;
+            int responseTotal = responseCounter.get();
+            long size = totalSize.get();
+
+            CountDownLatch latch = new CountDownLatch(channels.length - 1);
+            for (Channel channel : channels) {
+                group.execute(() -> {
+                    if (channel.isOpen()) {
+                        try {
+                            channel.closeFuture().sync();
+                        } catch (Exception e) {
+                            // ignored
+                        } finally {
+                            latch.countDown();
+                        }
                     }
                 });
             }
-            latch.await(10, TimeUnit.SECONDS);
+            latch.await(5, TimeUnit.SECONDS);
 
-            long totalTime = (System.currentTimeMillis() - start) / 1000;
             LOGGER.warn(">>> " +
                     "total time (s): " + totalTime);
             LOGGER.warn(">>> " +
-                    "total requests: " + reqCounter.get());
+                    "total responses: " + responseTotal + " / totalSize: " + (size / 1024));
             LOGGER.warn(">>> " +
-                    "total responses: " + responseCounter.get() + " / totalSize: " + (totalSize.get() / 1024));
-            LOGGER.warn(">>> " +
-                    "avg response: " + responseCounter.get() / totalTime + " / " +
-                    "avg size KB/s: " + (totalSize.get() / 1024) / totalTime);
+                    "avg response: " + responseTotal / totalTime + " / " +
+                    "avg size KB/s: " + (size / 1024) / totalTime);
         } catch (InterruptedException e) {
             LOGGER.error(e.getMessage(), e);
         } finally {
             if (!group.isShuttingDown()) {
                 group.shutdownGracefully();
             }
+        }
+    }
+
+    private static class MyHandler extends SimpleChannelInboundHandler<HttpObject> {
+
+        private final AtomicInteger responseCounter;
+        private final AtomicInteger channelsActive;
+        private final AtomicLong totalSize;
+        private final AtomicBoolean finished;
+
+        MyHandler(final AtomicInteger responseConter, AtomicInteger channelsActive, AtomicLong totalSize, AtomicBoolean finished) {
+            this.responseCounter = responseConter;
+            this.channelsActive = channelsActive;
+            this.totalSize = totalSize;
+            this.finished = finished;
+        }
+
+        @Override
+        public void channelActive(ChannelHandlerContext ctx) throws Exception {
+            channelsActive.incrementAndGet();
+            super.channelActive(ctx);
+        }
+
+        @Override
+        public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+            channelsActive.decrementAndGet();
+            super.channelInactive(ctx);
+        }
+
+        @Override
+        public void channelRead0(ChannelHandlerContext channelHandlerContext, HttpObject msg) throws Exception {
+            if (msg instanceof HttpResponse) {
+                responseCounter.incrementAndGet();
+                HttpResponse response = (HttpResponse) msg;
+                totalSize.addAndGet(response.toString().length());
+            }
+            if (msg instanceof HttpContent) {
+                HttpContent content = (HttpContent) msg;
+                ByteBuf byteBuf = content.content();
+                if (byteBuf.isReadable()) {
+                    totalSize.addAndGet(byteBuf.readableBytes());
+                }
+                if (content instanceof LastHttpContent && finished.get()) {
+//                                channelHandlerContext.close();
+                }
+            }
+        }
+
+        @Override
+        public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
+            LOGGER.error(cause.getMessage(), cause);
         }
     }
 
@@ -201,45 +233,8 @@ public class LoaderService {
                 final ChannelPipeline pipeline = channel.pipeline();
 //                pipeline.addLast(new IdleStateHandler(10, 10, 0, TimeUnit.SECONDS));
                 pipeline.addLast(new HttpClientCodec());
-                pipeline.addLast(new HttpContentDecompressor());
-                pipeline.addLast("inbound", new SimpleChannelInboundHandler<HttpObject>(){
-
-                    @Override
-                    public void channelActive(ChannelHandlerContext ctx) throws Exception {
-                        channelsActive.incrementAndGet();
-                        super.channelActive(ctx);
-                    }
-
-                    @Override
-                    public void channelInactive(ChannelHandlerContext ctx) throws Exception {
-                        channelsActive.decrementAndGet();
-                        super.channelInactive(ctx);
-                    }
-
-                    @Override
-                    public void channelRead0(ChannelHandlerContext channelHandlerContext, HttpObject msg) throws Exception {
-                        if (msg instanceof HttpResponse) {
-                            responseCounter.incrementAndGet();
-                            HttpResponse response = (HttpResponse) msg;
-                            totalSize.addAndGet(response.toString().length());
-                        }
-                        if (msg instanceof HttpContent) {
-                            HttpContent content = (HttpContent) msg;
-                            ByteBuf byteBuf = content.content();
-                            if (byteBuf.isReadable()) {
-                                totalSize.addAndGet(byteBuf.readableBytes());
-                            }
-                            if (content instanceof LastHttpContent && finished.get()) {
-//                                channelHandlerContext.close();
-                            }
-                        }
-                    }
-
-                    @Override
-                    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
-                        LOGGER.error(cause.getMessage(), cause);
-                    }
-                });
+//                pipeline.addLast(new HttpContentDecompressor());
+                pipeline.addLast("myinbound", new MyHandler(responseCounter, channelsActive, totalSize, finished));
             }
         };
     }
