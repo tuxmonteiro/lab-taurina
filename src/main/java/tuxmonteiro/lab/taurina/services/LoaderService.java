@@ -16,18 +16,10 @@
 
 package tuxmonteiro.lab.taurina.services;
 
-import static io.netty.handler.codec.http.HttpHeaderNames.HOST;
-
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
-import io.netty.channel.Channel;
-import io.netty.channel.ChannelHandlerContext;
-import io.netty.channel.ChannelInitializer;
-import io.netty.channel.ChannelOption;
-import io.netty.channel.ChannelPipeline;
-import io.netty.channel.EventLoopGroup;
-import io.netty.channel.SimpleChannelInboundHandler;
+import io.netty.channel.*;
 import io.netty.channel.epoll.EpollEventLoopGroup;
 import io.netty.channel.epoll.EpollSocketChannel;
 import io.netty.channel.kqueue.KQueueEventLoopGroup;
@@ -35,36 +27,13 @@ import io.netty.channel.kqueue.KQueueSocketChannel;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
-import io.netty.handler.codec.http.DefaultFullHttpRequest;
-import io.netty.handler.codec.http.DefaultHttpHeaders;
-import io.netty.handler.codec.http.FullHttpRequest;
-import io.netty.handler.codec.http.HttpClientCodec;
-import io.netty.handler.codec.http.HttpContent;
-import io.netty.handler.codec.http.HttpContentDecompressor;
-import io.netty.handler.codec.http.HttpHeaders;
-import io.netty.handler.codec.http.HttpMethod;
-import io.netty.handler.codec.http.HttpObject;
-import io.netty.handler.codec.http.HttpResponse;
-import io.netty.handler.codec.http.HttpVersion;
-import io.netty.handler.codec.http.LastHttpContent;
+import io.netty.handler.codec.http.*;
 import io.netty.handler.codec.http2.Http2SecurityUtil;
-import io.netty.handler.ssl.ApplicationProtocolConfig;
+import io.netty.handler.ssl.*;
 import io.netty.handler.ssl.ApplicationProtocolConfig.Protocol;
 import io.netty.handler.ssl.ApplicationProtocolConfig.SelectedListenerFailureBehavior;
 import io.netty.handler.ssl.ApplicationProtocolConfig.SelectorFailureBehavior;
-import io.netty.handler.ssl.ApplicationProtocolNames;
-import io.netty.handler.ssl.OpenSsl;
-import io.netty.handler.ssl.SslContext;
-import io.netty.handler.ssl.SslContextBuilder;
-import io.netty.handler.ssl.SslProvider;
-import io.netty.handler.ssl.SupportedCipherSuiteFilter;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
-import javax.net.ssl.SSLException;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.springframework.scheduling.annotation.Async;
@@ -72,6 +41,15 @@ import org.springframework.scheduling.annotation.EnableAsync;
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+
+import javax.net.ssl.SSLException;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+
+import static io.netty.handler.codec.http.HttpHeaderNames.HOST;
 
 @Service
 @EnableAsync
@@ -124,6 +102,8 @@ public class LoaderService {
     private AtomicLong start = new AtomicLong(0L);
 
     public LoaderService() throws SSLException {
+
+
     }
 
     @Async
@@ -139,16 +119,37 @@ public class LoaderService {
         final EventLoopGroup group = getEventLoopGroup(threads);
 
         Bootstrap bootstrap = new Bootstrap();
-        bootstrap.
-                group(group).
-                channel(getSocketChannelClass()).
-                option(ChannelOption.SO_KEEPALIVE, true).
-                option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 60000).
-                option(ChannelOption.TCP_NODELAY, true).
-                option(ChannelOption.SO_REUSEADDR, true).
-                handler(initializer());
+
+
+
+
+        if(request.protocolVersion().protocolName().equalsIgnoreCase("HTTP")){
+            bootstrap.
+                    group(group).
+                    channel(getSocketChannelClass()).
+                    option(ChannelOption.SO_KEEPALIVE, true).
+                    option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 60000).
+                    option(ChannelOption.TCP_NODELAY, true).
+                    option(ChannelOption.SO_REUSEADDR, true).
+                    handler(initializer());
+
+        }else{
+            Http2ClientInitializer initializerHttp2 = new Http2ClientInitializer(sslCtx, Integer.MAX_VALUE);
+            // Configure the client. HTTP2
+            bootstrap.group(group);
+            bootstrap.channel(NioSocketChannel.class);
+            bootstrap.option(ChannelOption.SO_KEEPALIVE, true);
+            bootstrap.remoteAddress(HOST, port);
+            bootstrap.handler(initializerHttp2());
+
+        }
+
 
         Channel[] channels = new Channel[numConn];
+
+        System.out.println(request.protocolVersion().protocolName());
+
+
 
         try {
             for (int chanId = 0; chanId < numConn; chanId++) {
