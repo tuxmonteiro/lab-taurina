@@ -16,6 +16,8 @@
 
 package tuxmonteiro.lab.taurina.services;
 
+import static io.netty.handler.codec.http.HttpHeaderNames.HOST;
+
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
@@ -38,12 +40,31 @@ import io.netty.handler.codec.http.DefaultHttpHeaders;
 import io.netty.handler.codec.http.FullHttpRequest;
 import io.netty.handler.codec.http.HttpClientCodec;
 import io.netty.handler.codec.http.HttpContent;
+import io.netty.handler.codec.http.HttpContentDecompressor;
 import io.netty.handler.codec.http.HttpHeaders;
 import io.netty.handler.codec.http.HttpMethod;
 import io.netty.handler.codec.http.HttpObject;
 import io.netty.handler.codec.http.HttpResponse;
 import io.netty.handler.codec.http.HttpVersion;
 import io.netty.handler.codec.http.LastHttpContent;
+import io.netty.handler.codec.http2.Http2SecurityUtil;
+import io.netty.handler.ssl.ApplicationProtocolConfig;
+import io.netty.handler.ssl.ApplicationProtocolConfig.Protocol;
+import io.netty.handler.ssl.ApplicationProtocolConfig.SelectedListenerFailureBehavior;
+import io.netty.handler.ssl.ApplicationProtocolConfig.SelectorFailureBehavior;
+import io.netty.handler.ssl.ApplicationProtocolNames;
+import io.netty.handler.ssl.OpenSsl;
+import io.netty.handler.ssl.SslContext;
+import io.netty.handler.ssl.SslContextBuilder;
+import io.netty.handler.ssl.SslProvider;
+import io.netty.handler.ssl.SupportedCipherSuiteFilter;
+import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import javax.net.ssl.SSLException;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.springframework.scheduling.annotation.Async;
@@ -52,20 +73,29 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
-
-import static io.netty.handler.codec.http.HttpHeaderNames.HOST;
-
 @Service
 @EnableAsync
 @EnableScheduling
 public class LoaderService {
 
     private static final Log LOGGER = LogFactory.getLog(LoaderService.class);
+
+    private final SslProvider provider = OpenSsl.isAlpnSupported() ? SslProvider.OPENSSL : SslProvider.JDK;
+    private final SslContext sslContext = SslContextBuilder.forClient()
+        .sslProvider(provider)
+        /* NOTE: the cipher filter may not include all ciphers required by the HTTP/2 specification.
+         * Please refer to the HTTP/2 specification for cipher requirements. */
+        .ciphers(Http2SecurityUtil.CIPHERS, SupportedCipherSuiteFilter.INSTANCE)
+        .trustManager(InsecureTrustManagerFactory.INSTANCE)
+        .applicationProtocolConfig(new ApplicationProtocolConfig(
+            Protocol.ALPN,
+            // NO_ADVERTISE is currently the only mode supported by both OpenSsl and JDK providers.
+            SelectorFailureBehavior.NO_ADVERTISE,
+            // ACCEPT is currently the only mode supported by both OpenSsl and JDK providers.
+            SelectedListenerFailureBehavior.ACCEPT,
+            ApplicationProtocolNames.HTTP_2,
+            ApplicationProtocolNames.HTTP_1_1))
+        .build();
 
     private static final boolean IS_MAC   = isMac();
     private static final boolean IS_LINUX = isLinux();
@@ -83,6 +113,7 @@ public class LoaderService {
     private final String host = System.getProperty("taurina.targethost", "127.0.0.1");
     private final int port = Integer.parseInt(System.getProperty("taurina.targetport", "8030"));
     private final String path = System.getProperty("taurina.targetpath", "/");
+    private final boolean ssl = Boolean.parseBoolean(System.getProperty("taurina.ssl", "false"));
     private final int threads = Integer.parseInt(System.getProperty("taurina.threads",
                                         String.valueOf(NUM_CORES > numConn ? numConn : NUM_CORES)));
 
@@ -92,9 +123,12 @@ public class LoaderService {
 
     private AtomicLong start = new AtomicLong(0L);
 
+    public LoaderService() throws SSLException {
+    }
+
     @Async
     @Scheduled(fixedRate = 5_000L)
-    public void start() {
+    public void start() throws Exception {
         if (start.get() != 0) {
             return;
         } else {
@@ -242,8 +276,11 @@ public class LoaderService {
             protected void initChannel(SocketChannel channel) throws Exception {
                 final ChannelPipeline pipeline = channel.pipeline();
 //                pipeline.addLast(new IdleStateHandler(10, 10, 0, TimeUnit.SECONDS));
+                if (ssl) {
+                    pipeline.addLast(sslContext.newHandler(channel.alloc()));
+                }
                 pipeline.addLast(new HttpClientCodec());
-//                pipeline.addLast(new HttpContentDecompressor());
+                pipeline.addLast(new HttpContentDecompressor());
                 pipeline.addLast("myinbound", new MyHandler(responseCounter, channelsActive, totalSize, finished));
             }
         };
