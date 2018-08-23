@@ -20,12 +20,12 @@ import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.*;
+import io.netty.channel.ChannelHandler.Sharable;
 import io.netty.channel.epoll.EpollEventLoopGroup;
 import io.netty.channel.epoll.EpollSocketChannel;
 import io.netty.channel.kqueue.KQueueEventLoopGroup;
 import io.netty.channel.kqueue.KQueueSocketChannel;
 import io.netty.channel.nio.NioEventLoopGroup;
-import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.codec.http.*;
 import io.netty.handler.codec.http2.Http2SecurityUtil;
@@ -34,6 +34,7 @@ import io.netty.handler.ssl.ApplicationProtocolConfig.Protocol;
 import io.netty.handler.ssl.ApplicationProtocolConfig.SelectedListenerFailureBehavior;
 import io.netty.handler.ssl.ApplicationProtocolConfig.SelectorFailureBehavior;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
+import java.net.URI;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.springframework.scheduling.annotation.Async;
@@ -56,60 +57,107 @@ import static io.netty.handler.codec.http.HttpHeaderNames.HOST;
 @EnableScheduling
 public class LoaderService {
 
+    enum Proto {
+        HTTPS_1(true, Object.class),
+        HTTPS_2(true, Object.class),
+        HTTP_1(false, Object.class),
+        HTTP_2(false, Object.class);
+
+        private final boolean ssl;
+        private final Class<Object> aClass;
+        private final AtomicBoolean finished;
+
+        Proto(boolean ssl, Class<Object> aClass) {
+            this.finished = new AtomicBoolean(false);
+            this.ssl = ssl;
+            this.aClass = aClass;
+        }
+
+        public boolean isSsl() {
+            return ssl;
+        }
+
+        public AtomicBoolean finished() {
+            return finished;
+        }
+
+        public SslContext sslContext() {
+            if (isSsl()) {
+                try {
+                    final SslProvider provider = OpenSsl.isAlpnSupported() ? SslProvider.OPENSSL : SslProvider.JDK;
+                    final SslContext sslContext = SslContextBuilder.forClient()
+                        .sslProvider(provider)
+                        /* NOTE: the cipher filter may not include all ciphers required by the HTTP/2 specification.
+                         * Please refer to the HTTP/2 specification for cipher requirements. */
+                        .ciphers(Http2SecurityUtil.CIPHERS, SupportedCipherSuiteFilter.INSTANCE)
+                        .trustManager(InsecureTrustManagerFactory.INSTANCE)
+                        .applicationProtocolConfig(new ApplicationProtocolConfig(
+                            Protocol.ALPN,
+                            // NO_ADVERTISE is currently the only mode supported by both OpenSsl and JDK providers.
+                            SelectorFailureBehavior.NO_ADVERTISE,
+                            // ACCEPT is currently the only mode supported by both OpenSsl and JDK providers.
+                            SelectedListenerFailureBehavior.ACCEPT,
+                            ApplicationProtocolNames.HTTP_2,
+                            ApplicationProtocolNames.HTTP_1_1))
+                        .build();
+                    return sslContext;
+                } catch (SSLException e) {
+                    LOGGER.error(e.getMessage(), e);
+                }
+            }
+            return null;
+        }
+
+        public ChannelInitializer initializer() {
+            if (this == HTTP_2 || this == HTTPS_2) {
+                return new Http2ClientInitializer(sslContext(), Integer.MAX_VALUE);
+            }
+            return new Http1ClientInitializer(sslContext(), new MyHandler(finished()));
+        }
+
+        public static Proto schemaToProto(String schema) {
+            switch (schema) {
+                case "h2":
+                    return HTTP_2;
+                case "h2c":
+                    return HTTPS_2;
+                case "http":
+                    return HTTP_1;
+                case "https":
+                    return HTTPS_1;
+            }
+            return null;
+        }
+
+    }
+
     private static final Log LOGGER = LogFactory.getLog(LoaderService.class);
 
-    private final SslProvider provider = OpenSsl.isAlpnSupported() ? SslProvider.OPENSSL : SslProvider.JDK;
-    private final SslContext sslContext = SslContextBuilder.forClient()
-            .sslProvider(provider)
-            /* NOTE: the cipher filter may not include all ciphers required by the HTTP/2 specification.
-             * Please refer to the HTTP/2 specification for cipher requirements. */
-            .ciphers(Http2SecurityUtil.CIPHERS, SupportedCipherSuiteFilter.INSTANCE)
-            .trustManager(InsecureTrustManagerFactory.INSTANCE)
-            .applicationProtocolConfig(new ApplicationProtocolConfig(
-                    Protocol.ALPN,
-                    // NO_ADVERTISE is currently the only mode supported by both OpenSsl and JDK providers.
-                    SelectorFailureBehavior.NO_ADVERTISE,
-                    // ACCEPT is currently the only mode supported by both OpenSsl and JDK providers.
-                    SelectedListenerFailureBehavior.ACCEPT,
-                    ApplicationProtocolNames.HTTP_2,
-                    ApplicationProtocolNames.HTTP_1_1))
-            .build();
+
 
     private static final boolean IS_MAC = isMac();
     private static final boolean IS_LINUX = isLinux();
 
     private static final int NUM_CORES = Runtime.getRuntime().availableProcessors();
 
-    private final AtomicBoolean finished = new AtomicBoolean(false);
-    private final AtomicLong totalSize = new AtomicLong(0L);
-    private final AtomicInteger responseCounter = new AtomicInteger(0);
-    private final AtomicInteger channelsActive = new AtomicInteger(0);
-
     private final int numConn = Integer.parseInt(System.getProperty("taurina.numconn", "10"));
     private final int durationSec = Integer.parseInt(System.getProperty("taurina.duration", "30"));
     private final HttpMethod method = HttpMethod.GET;
-    private final String host = System.getProperty("taurina.targethost", "127.0.0.1");
-    private final int port = Integer.parseInt(System.getProperty("taurina.targetport", "8030"));
+    private final String uriStr = System.getProperty("taurina.uri", "https://127.0.0.1:8443");
+    private final URI uri = URI.create(uriStr);
     private final String path = System.getProperty("taurina.targetpath", "/");
-    private final boolean ssl = Boolean.parseBoolean(System.getProperty("taurina.ssl", "false"));
     private final int threads = Integer.parseInt(System.getProperty("taurina.threads",
-            String.valueOf(NUM_CORES > numConn ? numConn : NUM_CORES)));
+        String.valueOf(NUM_CORES > numConn ? numConn : NUM_CORES)));
 
-    private final HttpHeaders headers = new DefaultHttpHeaders().add(HOST, host + (port > 0 ? ":" + port : ""));
+    private final HttpHeaders headers = new DefaultHttpHeaders().add(HOST, uri.getHost() + (uri.getPort() > 0 ? ":" + uri.getPort() : ""));
     private final FullHttpRequest request = new DefaultFullHttpRequest(
-            HttpVersion.HTTP_1_1, method, path, Unpooled.buffer(0), headers, new DefaultHttpHeaders());
+        HttpVersion.HTTP_1_1, method, path, Unpooled.buffer(0), headers, new DefaultHttpHeaders());
 
     private AtomicLong start = new AtomicLong(0L);
 
-
-    public LoaderService() throws SSLException {
-
-
-    }
-
     @Async
     @Scheduled(fixedRate = 5_000L)
-    public void start() throws Exception {
+    public void start() {
         if (start.get() != 0) {
             return;
         } else {
@@ -119,27 +167,30 @@ public class LoaderService {
 
         final EventLoopGroup group = getEventLoopGroup(threads);
 
-        Bootstrap bootstrap = new Bootstrap();
-            bootstrap.
-                    group(group).
-                    channel(getSocketChannelClass()).
-                    option(ChannelOption.SO_KEEPALIVE, true).
-                    option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 60000).
-                    option(ChannelOption.TCP_NODELAY, true).
-                    option(ChannelOption.SO_REUSEADDR, true);
+        final Proto proto = Proto.schemaToProto(uri.getScheme());
+        if (proto == null) {
+            LOGGER.error(new IllegalStateException("Proto is NULL"));
+            return;
+        }
 
-          if (request.protocolVersion().protocolName().equalsIgnoreCase("HTTP")) {
-              bootstrap.handler(initializer());
-        }else {
-             Http2ClientInitializer initializerHttp2 = new Http2ClientInitializer(sslCtx, Integer.MAX_VALUE);
-              bootstrap.handler(initializerHttp2);
-         }
+        final AtomicBoolean finished = proto.finished();
+        ChannelInitializer initializer = proto.initializer();
+
+        Bootstrap bootstrap = new Bootstrap();
+        bootstrap.
+            group(group).
+            channel(getSocketChannelClass()).
+            option(ChannelOption.SO_KEEPALIVE, true).
+            option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 60000).
+            option(ChannelOption.TCP_NODELAY, true).
+            option(ChannelOption.SO_REUSEADDR, true).
+            handler(initializer);
 
         Channel[] channels = new Channel[numConn];
 
         try {
             for (int chanId = 0; chanId < numConn; chanId++) {
-                channels[chanId] = newChannel(bootstrap);
+                channels[chanId] = newChannel(bootstrap, finished);
             }
 
             start.set(System.currentTimeMillis());
@@ -149,19 +200,11 @@ public class LoaderService {
             while (!finished.get()) {
                 for (int chanId = 0; chanId < numConn; chanId++) {
                     if (!(channels[chanId].isOpen() && channels[chanId].isActive())) {
-                        channels[chanId] = newChannel(bootstrap);
+                        channels[chanId] = newChannel(bootstrap, finished);
                     }
                 }
                 TimeUnit.MILLISECONDS.sleep(1L);
             }
-
-            if (channelsActive.get() < numConn) {
-                LOGGER.error(">--> channels actives: " + channelsActive.get());
-            }
-
-            long totalTime = (System.currentTimeMillis() - start.get()) / 1_000L;
-            int responseTotal = responseCounter.get();
-            long size = totalSize.get();
 
             CountDownLatch latch = new CountDownLatch(channels.length - 1);
             for (Channel channel : channels) {
@@ -179,13 +222,6 @@ public class LoaderService {
             }
             latch.await(5, TimeUnit.SECONDS);
 
-            LOGGER.warn(">>> " +
-                    "total time (s): " + totalTime);
-            LOGGER.warn(">>> " +
-                    "total responses: " + responseTotal + " / totalSize: " + (size / 1024));
-            LOGGER.warn(">>> " +
-                    "avg response: " + responseTotal / totalTime + " / " +
-                    "avg size KB/s: " + (size / 1024) / totalTime);
         } catch (InterruptedException e) {
             LOGGER.error(e.getMessage(), e);
         } finally {
@@ -195,8 +231,8 @@ public class LoaderService {
         }
     }
 
-    private Channel newChannel(final Bootstrap bootstrap) throws InterruptedException {
-        final Channel channel = bootstrap.clone().connect(host, port).sync().channel();
+    private Channel newChannel(final Bootstrap bootstrap, AtomicBoolean finished) throws InterruptedException {
+        final Channel channel = bootstrap.clone().connect(uri.getHost(), uri.getPort()).sync().channel();
         channel.eventLoop().scheduleAtFixedRate(() -> {
             if (channel.isActive() && !finished.get()) {
                 channel.writeAndFlush(request.copy());
@@ -206,82 +242,58 @@ public class LoaderService {
         return channel;
     }
 
+    @Sharable
     private static class MyHandler extends SimpleChannelInboundHandler<HttpObject> {
 
-        private final AtomicInteger responseCounter;
-        private final AtomicInteger channelsActive;
-        private final AtomicLong totalSize;
+        private static final AtomicInteger RESPONSE_COUNTER = new AtomicInteger(0);
+        private static final AtomicInteger CHANNELS_ACTIVE = new AtomicInteger(0);
+        private static final AtomicLong TOTAL_SIZE = new AtomicLong(0L);
+
         private final AtomicBoolean finished;
 
-        MyHandler(final AtomicInteger responseConter, AtomicInteger channelsActive, AtomicLong totalSize, AtomicBoolean finished) {
-            this.responseCounter = responseConter;
-            this.channelsActive = channelsActive;
-            this.totalSize = totalSize;
+        public MyHandler(AtomicBoolean finished) {
             this.finished = finished;
         }
 
         @Override
         public void channelActive(ChannelHandlerContext ctx) throws Exception {
-            channelsActive.incrementAndGet();
+            CHANNELS_ACTIVE.incrementAndGet();
             super.channelActive(ctx);
         }
 
         @Override
         public void channelInactive(ChannelHandlerContext ctx) throws Exception {
-            channelsActive.decrementAndGet();
+            CHANNELS_ACTIVE.decrementAndGet();
             super.channelInactive(ctx);
         }
 
         @Override
         public void channelRead0(ChannelHandlerContext channelHandlerContext, HttpObject msg) throws Exception {
 
-                if (msg instanceof HttpResponse) {
-                    responseCounter.incrementAndGet();
-                    HttpResponse response = (HttpResponse) msg;
-                    totalSize.addAndGet(response.toString().length());
-                }
-
-                if (msg instanceof FullHttpResponse) {
-                    responseCounter.incrementAndGet();
-                    HttpResponse response = (FullHttpResponse) msg;
-                    totalSize.addAndGet(response.toString().length());
-                }
-
-                if (msg instanceof HttpContent) {
-                    HttpContent content = (HttpContent) msg;
-                    ByteBuf byteBuf = content.content();
-                    if (byteBuf.isReadable()) {
-                        totalSize.addAndGet(byteBuf.readableBytes());
-                    }
-                    if (content instanceof LastHttpContent && finished.get()) {
-                        channelHandlerContext.close();
-                    }
-                }
+            if (msg instanceof HttpResponse) {
+                RESPONSE_COUNTER.incrementAndGet();
+                HttpResponse response = (HttpResponse) msg;
+                TOTAL_SIZE.addAndGet(response.toString().length());
             }
 
-    }
-
-    @Override
-    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
-        LOGGER.error(cause.getMessage(), cause);
-    }
-
-}
-
-    private ChannelInitializer<SocketChannel> initializer() {
-        return new ChannelInitializer<SocketChannel>() {
-            @Override
-            protected void initChannel(SocketChannel channel) throws Exception {
-                final ChannelPipeline pipeline = channel.pipeline();
-//                pipeline.addLast(new IdleStateHandler(10, 10, 0, TimeUnit.SECONDS));
-                if (ssl) {
-                    pipeline.addLast(sslContext.newHandler(channel.alloc()));
-                }
-                pipeline.addLast(new HttpClientCodec());
-                pipeline.addLast(new HttpContentDecompressor());
-                pipeline.addLast("myinbound", new MyHandler(responseCounter, channelsActive, totalSize, finished));
+            if (msg instanceof FullHttpResponse) {
+                RESPONSE_COUNTER.incrementAndGet();
+                HttpResponse response = (FullHttpResponse) msg;
+                TOTAL_SIZE.addAndGet(response.toString().length());
             }
-        };
+
+            if (msg instanceof HttpContent) {
+                HttpContent content = (HttpContent) msg;
+                ByteBuf byteBuf = content.content();
+                if (byteBuf.isReadable()) {
+                    TOTAL_SIZE.addAndGet(byteBuf.readableBytes());
+                }
+                if (content instanceof LastHttpContent && finished.get()) {
+                    channelHandlerContext.close();
+                }
+            }
+        }
+
     }
 
     private EventLoopGroup getEventLoopGroup(int numCores) {
