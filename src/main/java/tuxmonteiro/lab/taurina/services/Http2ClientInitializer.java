@@ -33,12 +33,11 @@ import static io.netty.handler.logging.LogLevel.INFO;
  * Configures the client pipeline to support HTTP/2 frames.
  */
 public class Http2ClientInitializer extends ChannelInitializer<SocketChannel> {
-    private static final Http2FrameLogger logger = new Http2FrameLogger(INFO, Http2ClientInitializer.class);
 
     private final SslContext sslCtx;
     private final int maxContentLength;
     private HttpToHttp2ConnectionHandler connectionHandler;
-    private HttpResponseHandler responseHandler;
+    private Http2ResponseHandler responseHandler;
     private Http2SettingsHandler settingsHandler;
 
     public Http2ClientInitializer(SslContext sslCtx, int maxContentLength) {
@@ -56,10 +55,9 @@ public class Http2ClientInitializer extends ChannelInitializer<SocketChannel> {
                                 .maxContentLength(maxContentLength)
                                 .propagateSettings(true)
                                 .build()))
-                .frameLogger(logger)
                 .connection(connection)
                 .build();
-        responseHandler = new HttpResponseHandler();
+        responseHandler = new Http2ResponseHandler();
         settingsHandler = new Http2SettingsHandler(ch.newPromise());
         if (sslCtx != null) {
             configureSsl(ch);
@@ -68,7 +66,7 @@ public class Http2ClientInitializer extends ChannelInitializer<SocketChannel> {
         }
     }
 
-    public HttpResponseHandler responseHandler() {
+    public Http2ResponseHandler responseHandler() {
         return responseHandler;
     }
 
@@ -142,7 +140,6 @@ public class Http2ClientInitializer extends ChannelInitializer<SocketChannel> {
     private static class UserEventLogger extends ChannelInboundHandlerAdapter {
         @Override
         public void userEventTriggered(ChannelHandlerContext ctx, Object evt) throws Exception {
-            System.out.println("User Event Triggered: " + evt);
             ctx.fireUserEventTriggered(evt);
         }
     }

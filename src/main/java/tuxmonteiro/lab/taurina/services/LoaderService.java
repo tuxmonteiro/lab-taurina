@@ -16,25 +16,54 @@
 
 package tuxmonteiro.lab.taurina.services;
 
+import static io.netty.handler.codec.http.HttpHeaderNames.HOST;
+
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
-import io.netty.channel.*;
-import io.netty.channel.ChannelHandler.Sharable;
+import io.netty.channel.Channel;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelInitializer;
+import io.netty.channel.ChannelOption;
+import io.netty.channel.EventLoopGroup;
+import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.channel.epoll.EpollEventLoopGroup;
 import io.netty.channel.epoll.EpollSocketChannel;
 import io.netty.channel.kqueue.KQueueEventLoopGroup;
 import io.netty.channel.kqueue.KQueueSocketChannel;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.nio.NioSocketChannel;
-import io.netty.handler.codec.http.*;
+import io.netty.handler.codec.http.DefaultFullHttpRequest;
+import io.netty.handler.codec.http.DefaultHttpHeaders;
+import io.netty.handler.codec.http.FullHttpRequest;
+import io.netty.handler.codec.http.FullHttpResponse;
+import io.netty.handler.codec.http.HttpContent;
+import io.netty.handler.codec.http.HttpHeaders;
+import io.netty.handler.codec.http.HttpMethod;
+import io.netty.handler.codec.http.HttpObject;
+import io.netty.handler.codec.http.HttpResponse;
+import io.netty.handler.codec.http.HttpVersion;
+import io.netty.handler.codec.http.LastHttpContent;
 import io.netty.handler.codec.http2.Http2SecurityUtil;
-import io.netty.handler.ssl.*;
+import io.netty.handler.codec.http2.HttpConversionUtil;
+import io.netty.handler.ssl.ApplicationProtocolConfig;
 import io.netty.handler.ssl.ApplicationProtocolConfig.Protocol;
 import io.netty.handler.ssl.ApplicationProtocolConfig.SelectedListenerFailureBehavior;
 import io.netty.handler.ssl.ApplicationProtocolConfig.SelectorFailureBehavior;
+import io.netty.handler.ssl.ApplicationProtocolNames;
+import io.netty.handler.ssl.OpenSsl;
+import io.netty.handler.ssl.SslContext;
+import io.netty.handler.ssl.SslContextBuilder;
+import io.netty.handler.ssl.SslProvider;
+import io.netty.handler.ssl.SupportedCipherSuiteFilter;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import java.net.URI;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import javax.net.ssl.SSLException;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.springframework.scheduling.annotation.Async;
@@ -42,15 +71,6 @@ import org.springframework.scheduling.annotation.EnableAsync;
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-
-import javax.net.ssl.SSLException;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
-
-import static io.netty.handler.codec.http.HttpHeaderNames.HOST;
 
 @Service
 @EnableAsync
@@ -85,7 +105,7 @@ public class LoaderService {
             if (isSsl()) {
                 try {
                     final SslProvider provider = OpenSsl.isAlpnSupported() ? SslProvider.OPENSSL : SslProvider.JDK;
-                    final SslContext sslContext = SslContextBuilder.forClient()
+                    return SslContextBuilder.forClient()
                         .sslProvider(provider)
                         /* NOTE: the cipher filter may not include all ciphers required by the HTTP/2 specification.
                          * Please refer to the HTTP/2 specification for cipher requirements. */
@@ -100,7 +120,6 @@ public class LoaderService {
                             ApplicationProtocolNames.HTTP_2,
                             ApplicationProtocolNames.HTTP_1_1))
                         .build();
-                    return sslContext;
                 } catch (SSLException e) {
                     LOGGER.error(e.getMessage(), e);
                 }
@@ -128,28 +147,31 @@ public class LoaderService {
             }
             return null;
         }
-
     }
 
     private static final Log LOGGER = LogFactory.getLog(LoaderService.class);
-
-
-
     private static final boolean IS_MAC = isMac();
     private static final boolean IS_LINUX = isLinux();
 
     private static final int NUM_CORES = Runtime.getRuntime().availableProcessors();
 
     private final int numConn = Integer.parseInt(System.getProperty("taurina.numconn", "10"));
-    private final int durationSec = Integer.parseInt(System.getProperty("taurina.duration", "30"));
+    private final int durationSec = Integer.parseInt(System.getProperty("taurina.duration", "5"));
     private final HttpMethod method = HttpMethod.GET;
-    private final String uriStr = System.getProperty("taurina.uri", "https://127.0.0.1:8443");
+    private final String uriStr = System.getProperty("taurina.uri", "h2c://127.0.0.1:8445");
     private final URI uri = URI.create(uriStr);
     private final String path = System.getProperty("taurina.targetpath", "/");
     private final int threads = Integer.parseInt(System.getProperty("taurina.threads",
         String.valueOf(NUM_CORES > numConn ? numConn : NUM_CORES)));
 
-    private final HttpHeaders headers = new DefaultHttpHeaders().add(HOST, uri.getHost() + (uri.getPort() > 0 ? ":" + uri.getPort() : ""));
+    private final HttpHeaders headers = new DefaultHttpHeaders()
+        .add(HOST, uri.getHost() + (uri.getPort() > 0 ? ":" + uri.getPort() : ""))
+        .add(HttpConversionUtil.ExtensionHeaderNames.SCHEME.text(), convertSchemeIfNecessary(uri.getScheme()));
+
+    private String convertSchemeIfNecessary(String scheme) {
+        return scheme.replace("h2c", "https").replace("h2", "http");
+    }
+
     private final FullHttpRequest request = new DefaultFullHttpRequest(
         HttpVersion.HTTP_1_1, method, path, Unpooled.buffer(0), headers, new DefaultHttpHeaders());
 
@@ -174,7 +196,6 @@ public class LoaderService {
         }
 
         final AtomicBoolean finished = proto.finished();
-        ChannelInitializer initializer = proto.initializer();
 
         Bootstrap bootstrap = new Bootstrap();
         bootstrap.
@@ -183,14 +204,13 @@ public class LoaderService {
             option(ChannelOption.SO_KEEPALIVE, true).
             option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 60000).
             option(ChannelOption.TCP_NODELAY, true).
-            option(ChannelOption.SO_REUSEADDR, true).
-            handler(initializer);
+            option(ChannelOption.SO_REUSEADDR, true);
 
         Channel[] channels = new Channel[numConn];
 
         try {
             for (int chanId = 0; chanId < numConn; chanId++) {
-                channels[chanId] = newChannel(bootstrap, finished);
+                channels[chanId] = newChannel(bootstrap, finished, proto);
             }
 
             start.set(System.currentTimeMillis());
@@ -200,7 +220,7 @@ public class LoaderService {
             while (!finished.get()) {
                 for (int chanId = 0; chanId < numConn; chanId++) {
                     if (!(channels[chanId].isOpen() && channels[chanId].isActive())) {
-                        channels[chanId] = newChannel(bootstrap, finished);
+                        channels[chanId] = newChannel(bootstrap, finished, proto);
                     }
                 }
                 TimeUnit.MILLISECONDS.sleep(1L);
@@ -231,8 +251,8 @@ public class LoaderService {
         }
     }
 
-    private Channel newChannel(final Bootstrap bootstrap, AtomicBoolean finished) throws InterruptedException {
-        final Channel channel = bootstrap.clone().connect(uri.getHost(), uri.getPort()).sync().channel();
+    private Channel newChannel(final Bootstrap bootstrap, AtomicBoolean finished, Proto proto) throws InterruptedException {
+        final Channel channel = bootstrap.clone().handler(proto.initializer()).connect(uri.getHost(), uri.getPort()).sync().channel();
         channel.eventLoop().scheduleAtFixedRate(() -> {
             if (channel.isActive() && !finished.get()) {
                 channel.writeAndFlush(request.copy());
@@ -242,7 +262,6 @@ public class LoaderService {
         return channel;
     }
 
-    @Sharable
     private static class MyHandler extends SimpleChannelInboundHandler<HttpObject> {
 
         private static final AtomicInteger RESPONSE_COUNTER = new AtomicInteger(0);
