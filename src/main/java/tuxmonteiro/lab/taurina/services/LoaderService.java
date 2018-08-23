@@ -78,19 +78,17 @@ import org.springframework.stereotype.Service;
 public class LoaderService {
 
     enum Proto {
-        HTTPS_1(true, Object.class),
-        HTTPS_2(true, Object.class),
-        HTTP_1(false, Object.class),
-        HTTP_2(false, Object.class);
+        HTTPS_1(true),
+        HTTPS_2(true),
+        HTTP_1(false),
+        HTTP_2(false);
 
         private final boolean ssl;
-        private final Class<Object> aClass;
         private final AtomicBoolean finished;
 
-        Proto(boolean ssl, Class<Object> aClass) {
+        Proto(boolean ssl) {
             this.finished = new AtomicBoolean(false);
             this.ssl = ssl;
-            this.aClass = aClass;
         }
 
         public boolean isSsl() {
@@ -131,7 +129,7 @@ public class LoaderService {
             if (this == HTTP_2 || this == HTTPS_2) {
                 return new Http2ClientInitializer(sslContext(), Integer.MAX_VALUE);
             }
-            return new Http1ClientInitializer(sslContext(), new MyHandler(finished()));
+            return new Http1ClientInitializer(sslContext(), finished);
         }
 
         public static Proto schemaToProto(String schema) {
@@ -260,59 +258,6 @@ public class LoaderService {
         }, 1, 1, TimeUnit.MICROSECONDS);
 
         return channel;
-    }
-
-    private static class MyHandler extends SimpleChannelInboundHandler<HttpObject> {
-
-        private static final AtomicInteger RESPONSE_COUNTER = new AtomicInteger(0);
-        private static final AtomicInteger CHANNELS_ACTIVE = new AtomicInteger(0);
-        private static final AtomicLong TOTAL_SIZE = new AtomicLong(0L);
-
-        private final AtomicBoolean finished;
-
-        public MyHandler(AtomicBoolean finished) {
-            this.finished = finished;
-        }
-
-        @Override
-        public void channelActive(ChannelHandlerContext ctx) throws Exception {
-            CHANNELS_ACTIVE.incrementAndGet();
-            super.channelActive(ctx);
-        }
-
-        @Override
-        public void channelInactive(ChannelHandlerContext ctx) throws Exception {
-            CHANNELS_ACTIVE.decrementAndGet();
-            super.channelInactive(ctx);
-        }
-
-        @Override
-        public void channelRead0(ChannelHandlerContext channelHandlerContext, HttpObject msg) throws Exception {
-
-            if (msg instanceof HttpResponse) {
-                RESPONSE_COUNTER.incrementAndGet();
-                HttpResponse response = (HttpResponse) msg;
-                TOTAL_SIZE.addAndGet(response.toString().length());
-            }
-
-            if (msg instanceof FullHttpResponse) {
-                RESPONSE_COUNTER.incrementAndGet();
-                HttpResponse response = (FullHttpResponse) msg;
-                TOTAL_SIZE.addAndGet(response.toString().length());
-            }
-
-            if (msg instanceof HttpContent) {
-                HttpContent content = (HttpContent) msg;
-                ByteBuf byteBuf = content.content();
-                if (byteBuf.isReadable()) {
-                    TOTAL_SIZE.addAndGet(byteBuf.readableBytes());
-                }
-                if (content instanceof LastHttpContent && finished.get()) {
-                    channelHandlerContext.close();
-                }
-            }
-        }
-
     }
 
     private EventLoopGroup getEventLoopGroup(int numCores) {

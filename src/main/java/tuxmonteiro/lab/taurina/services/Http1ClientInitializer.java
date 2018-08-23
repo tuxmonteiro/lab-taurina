@@ -7,15 +7,16 @@ import io.netty.channel.socket.SocketChannel;
 import io.netty.handler.codec.http.HttpClientCodec;
 import io.netty.handler.codec.http.HttpContentDecompressor;
 import io.netty.handler.ssl.SslContext;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class Http1ClientInitializer extends ChannelInitializer<SocketChannel> {
 
     private final SslContext sslContext;
     private final ChannelHandler handler;
 
-    public Http1ClientInitializer(SslContext sslContext, ChannelHandler handler) {
+    public Http1ClientInitializer(SslContext sslContext, AtomicBoolean finished) {
         this.sslContext = sslContext;
-        this.handler = handler;
+        this.handler = new Http1ClientHandler(finished);
     }
 
     @Override
