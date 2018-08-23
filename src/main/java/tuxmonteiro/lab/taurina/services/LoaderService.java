@@ -101,6 +101,7 @@ public class LoaderService {
 
     private AtomicLong start = new AtomicLong(0L);
 
+
     public LoaderService() throws SSLException {
 
 
@@ -248,20 +249,47 @@ public class LoaderService {
 
         @Override
         public void channelRead0(ChannelHandlerContext channelHandlerContext, HttpObject msg) throws Exception {
-            if (msg instanceof HttpResponse) {
-                responseCounter.incrementAndGet();
-                HttpResponse response = (HttpResponse) msg;
-                totalSize.addAndGet(response.toString().length());
+
+            if(request.protocolVersion().protocolName().equalsIgnoreCase("HTTP")){
+
+                if (msg instanceof HttpResponse) {
+                    responseCounter.incrementAndGet();
+                    HttpResponse response = (HttpResponse) msg;
+                    totalSize.addAndGet(response.toString().length());
+                }
+                if (msg instanceof HttpContent) {
+                    HttpContent content = (HttpContent) msg;
+                    ByteBuf byteBuf = content.content();
+                    if (byteBuf.isReadable()) {
+                        totalSize.addAndGet(byteBuf.readableBytes());
+                    }
+                    if (content instanceof LastHttpContent && finished.get()) {
+                        channelHandlerContext.close();
+                    }
+                }
+            }else{
+                Integer streamId = msg.headers().getInt(HttpConversionUtil.ExtensionHeaderNames.STREAM_ID.text());
+                if (streamId == null) {
+                    System.err.println("HttpResponseHandler unexpected message received: " + msg);
+                    return;
+                }
+
+                Entry<ChannelFuture, ChannelPromise> entry = streamidPromiseMap.get(streamId);
+                if (entry == null) {
+                    System.err.println("Message received for unknown stream id " + streamId);
+                } else {
+                    // Do stuff with the message (for now just print it)
+                    ByteBuf content = msg.content();
+                    if (content.isReadable()) {
+                        int contentLength = content.readableBytes();
+                        byte[] arr = new byte[contentLength];
+                        content.readBytes(arr);
+                        System.out.println(new String(arr, 0, contentLength, CharsetUtil.UTF_8));
+                    }
+
+                    entry.getValue().setSuccess();
+                }
             }
-            if (msg instanceof HttpContent) {
-                HttpContent content = (HttpContent) msg;
-                ByteBuf byteBuf = content.content();
-                if (byteBuf.isReadable()) {
-                    totalSize.addAndGet(byteBuf.readableBytes());
-                }
-                if (content instanceof LastHttpContent && finished.get()) {
-                    channelHandlerContext.close();
-                }
             }
         }
 
