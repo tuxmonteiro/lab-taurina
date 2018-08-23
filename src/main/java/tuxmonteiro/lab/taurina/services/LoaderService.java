@@ -60,22 +60,22 @@ public class LoaderService {
 
     private final SslProvider provider = OpenSsl.isAlpnSupported() ? SslProvider.OPENSSL : SslProvider.JDK;
     private final SslContext sslContext = SslContextBuilder.forClient()
-        .sslProvider(provider)
-        /* NOTE: the cipher filter may not include all ciphers required by the HTTP/2 specification.
-         * Please refer to the HTTP/2 specification for cipher requirements. */
-        .ciphers(Http2SecurityUtil.CIPHERS, SupportedCipherSuiteFilter.INSTANCE)
-        .trustManager(InsecureTrustManagerFactory.INSTANCE)
-        .applicationProtocolConfig(new ApplicationProtocolConfig(
-            Protocol.ALPN,
-            // NO_ADVERTISE is currently the only mode supported by both OpenSsl and JDK providers.
-            SelectorFailureBehavior.NO_ADVERTISE,
-            // ACCEPT is currently the only mode supported by both OpenSsl and JDK providers.
-            SelectedListenerFailureBehavior.ACCEPT,
-            ApplicationProtocolNames.HTTP_2,
-            ApplicationProtocolNames.HTTP_1_1))
-        .build();
+            .sslProvider(provider)
+            /* NOTE: the cipher filter may not include all ciphers required by the HTTP/2 specification.
+             * Please refer to the HTTP/2 specification for cipher requirements. */
+            .ciphers(Http2SecurityUtil.CIPHERS, SupportedCipherSuiteFilter.INSTANCE)
+            .trustManager(InsecureTrustManagerFactory.INSTANCE)
+            .applicationProtocolConfig(new ApplicationProtocolConfig(
+                    Protocol.ALPN,
+                    // NO_ADVERTISE is currently the only mode supported by both OpenSsl and JDK providers.
+                    SelectorFailureBehavior.NO_ADVERTISE,
+                    // ACCEPT is currently the only mode supported by both OpenSsl and JDK providers.
+                    SelectedListenerFailureBehavior.ACCEPT,
+                    ApplicationProtocolNames.HTTP_2,
+                    ApplicationProtocolNames.HTTP_1_1))
+            .build();
 
-    private static final boolean IS_MAC   = isMac();
+    private static final boolean IS_MAC = isMac();
     private static final boolean IS_LINUX = isLinux();
 
     private static final int NUM_CORES = Runtime.getRuntime().availableProcessors();
@@ -93,7 +93,7 @@ public class LoaderService {
     private final String path = System.getProperty("taurina.targetpath", "/");
     private final boolean ssl = Boolean.parseBoolean(System.getProperty("taurina.ssl", "false"));
     private final int threads = Integer.parseInt(System.getProperty("taurina.threads",
-                                        String.valueOf(NUM_CORES > numConn ? numConn : NUM_CORES)));
+            String.valueOf(NUM_CORES > numConn ? numConn : NUM_CORES)));
 
     private final HttpHeaders headers = new DefaultHttpHeaders().add(HOST, host + (port > 0 ? ":" + port : ""));
     private final FullHttpRequest request = new DefaultFullHttpRequest(
@@ -122,9 +122,7 @@ public class LoaderService {
         Bootstrap bootstrap = new Bootstrap();
 
 
-
-
-        if(request.protocolVersion().protocolName().equalsIgnoreCase("HTTP")){
+        if (request.protocolVersion().protocolName().equalsIgnoreCase("HTTP")) {
             bootstrap.
                     group(group).
                     channel(getSocketChannelClass()).
@@ -134,7 +132,7 @@ public class LoaderService {
                     option(ChannelOption.SO_REUSEADDR, true).
                     handler(initializer());
 
-        }else{
+        } else {
             Http2ClientInitializer initializerHttp2 = new Http2ClientInitializer(sslCtx, Integer.MAX_VALUE);
             // Configure the client. HTTP2
             bootstrap.group(group);
@@ -149,7 +147,6 @@ public class LoaderService {
         Channel[] channels = new Channel[numConn];
 
         System.out.println(request.protocolVersion().protocolName());
-
 
 
         try {
@@ -250,7 +247,7 @@ public class LoaderService {
         @Override
         public void channelRead0(ChannelHandlerContext channelHandlerContext, HttpObject msg) throws Exception {
 
-            if(request.protocolVersion().protocolName().equalsIgnoreCase("HTTP")){
+            if (request.protocolVersion().protocolName().equalsIgnoreCase("HTTP")) {
 
                 if (msg instanceof HttpResponse) {
                     responseCounter.incrementAndGet();
@@ -267,7 +264,7 @@ public class LoaderService {
                         channelHandlerContext.close();
                     }
                 }
-            }else{
+            } else {
                 Integer streamId = msg.headers().getInt(HttpConversionUtil.ExtensionHeaderNames.STREAM_ID.text());
                 if (streamId == null) {
                     System.err.println("HttpResponseHandler unexpected message received: " + msg);
@@ -290,14 +287,15 @@ public class LoaderService {
                     entry.getValue().setSuccess();
                 }
             }
-            }
-        }
-
-        @Override
-        public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
-            LOGGER.error(cause.getMessage(), cause);
         }
     }
+
+    @Override
+    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
+        LOGGER.error(cause.getMessage(), cause);
+    }
+
+}
 
     private ChannelInitializer<SocketChannel> initializer() {
         return new ChannelInitializer<SocketChannel>() {
@@ -317,17 +315,17 @@ public class LoaderService {
 
     private EventLoopGroup getEventLoopGroup(int numCores) {
         // @formatter:off
-        return IS_MAC   ? new KQueueEventLoopGroup(numCores) :
-               IS_LINUX ? new EpollEventLoopGroup(numCores) :
-                          new NioEventLoopGroup(numCores);
+        return IS_MAC ? new KQueueEventLoopGroup(numCores) :
+                IS_LINUX ? new EpollEventLoopGroup(numCores) :
+                        new NioEventLoopGroup(numCores);
         // @formatter:on
     }
 
     private Class<? extends Channel> getSocketChannelClass() {
         // @formatter:off
-        return IS_MAC   ? KQueueSocketChannel.class :
-               IS_LINUX ? EpollSocketChannel.class :
-                          NioSocketChannel.class;
+        return IS_MAC ? KQueueSocketChannel.class :
+                IS_LINUX ? EpollSocketChannel.class :
+                        NioSocketChannel.class;
         // @formatter:on
     }
 
