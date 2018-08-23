@@ -120,34 +120,22 @@ public class LoaderService {
         final EventLoopGroup group = getEventLoopGroup(threads);
 
         Bootstrap bootstrap = new Bootstrap();
-
-
-        if (request.protocolVersion().protocolName().equalsIgnoreCase("HTTP")) {
             bootstrap.
                     group(group).
                     channel(getSocketChannelClass()).
                     option(ChannelOption.SO_KEEPALIVE, true).
                     option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 60000).
                     option(ChannelOption.TCP_NODELAY, true).
-                    option(ChannelOption.SO_REUSEADDR, true).
-                    handler(initializer());
+                    option(ChannelOption.SO_REUSEADDR, true);
 
-        } else {
-            Http2ClientInitializer initializerHttp2 = new Http2ClientInitializer(sslCtx, Integer.MAX_VALUE);
-            // Configure the client. HTTP2
-            bootstrap.group(group);
-            bootstrap.channel(NioSocketChannel.class);
-            bootstrap.option(ChannelOption.SO_KEEPALIVE, true);
-            bootstrap.remoteAddress(HOST, port);
-            bootstrap.handler(initializerHttp2());
-
-        }
-
+          if (request.protocolVersion().protocolName().equalsIgnoreCase("HTTP")) {
+              bootstrap.handler(initializer());
+        }else {
+             Http2ClientInitializer initializerHttp2 = new Http2ClientInitializer(sslCtx, Integer.MAX_VALUE);
+              bootstrap.handler(initializerHttp2);
+         }
 
         Channel[] channels = new Channel[numConn];
-
-        System.out.println(request.protocolVersion().protocolName());
-
 
         try {
             for (int chanId = 0; chanId < numConn; chanId++) {
@@ -247,13 +235,18 @@ public class LoaderService {
         @Override
         public void channelRead0(ChannelHandlerContext channelHandlerContext, HttpObject msg) throws Exception {
 
-            if (request.protocolVersion().protocolName().equalsIgnoreCase("HTTP")) {
-
                 if (msg instanceof HttpResponse) {
                     responseCounter.incrementAndGet();
                     HttpResponse response = (HttpResponse) msg;
                     totalSize.addAndGet(response.toString().length());
                 }
+
+                if (msg instanceof FullHttpResponse) {
+                    responseCounter.incrementAndGet();
+                    HttpResponse response = (FullHttpResponse) msg;
+                    totalSize.addAndGet(response.toString().length());
+                }
+
                 if (msg instanceof HttpContent) {
                     HttpContent content = (HttpContent) msg;
                     ByteBuf byteBuf = content.content();
@@ -264,30 +257,8 @@ public class LoaderService {
                         channelHandlerContext.close();
                     }
                 }
-            } else {
-                Integer streamId = msg.headers().getInt(HttpConversionUtil.ExtensionHeaderNames.STREAM_ID.text());
-                if (streamId == null) {
-                    System.err.println("HttpResponseHandler unexpected message received: " + msg);
-                    return;
-                }
-
-                Entry<ChannelFuture, ChannelPromise> entry = streamidPromiseMap.get(streamId);
-                if (entry == null) {
-                    System.err.println("Message received for unknown stream id " + streamId);
-                } else {
-                    // Do stuff with the message (for now just print it)
-                    ByteBuf content = msg.content();
-                    if (content.isReadable()) {
-                        int contentLength = content.readableBytes();
-                        byte[] arr = new byte[contentLength];
-                        content.readBytes(arr);
-                        System.out.println(new String(arr, 0, contentLength, CharsetUtil.UTF_8));
-                    }
-
-                    entry.getValue().setSuccess();
-                }
             }
-        }
+
     }
 
     @Override
