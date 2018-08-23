@@ -59,6 +59,11 @@
             <version>${netty.version}</version>
             <classifier>osx-${os.detected.arch}</classifier>
         </dependency>
+        <dependency>
+            <groupId>org.bouncycastle</groupId>
+            <artifactId>bcprov-jdk15on</artifactId>
+            <version>1.60</version>
+        </dependency>
     </dependencies>
 
     <build>
