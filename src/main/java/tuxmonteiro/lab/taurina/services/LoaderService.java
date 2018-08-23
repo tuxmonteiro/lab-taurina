@@ -19,14 +19,11 @@ package tuxmonteiro.lab.taurina.services;
 import static io.netty.handler.codec.http.HttpHeaderNames.HOST;
 
 import io.netty.bootstrap.Bootstrap;
-import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
-import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
-import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.channel.epoll.EpollEventLoopGroup;
 import io.netty.channel.epoll.EpollSocketChannel;
 import io.netty.channel.kqueue.KQueueEventLoopGroup;
@@ -36,14 +33,9 @@ import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.codec.http.DefaultFullHttpRequest;
 import io.netty.handler.codec.http.DefaultHttpHeaders;
 import io.netty.handler.codec.http.FullHttpRequest;
-import io.netty.handler.codec.http.FullHttpResponse;
-import io.netty.handler.codec.http.HttpContent;
 import io.netty.handler.codec.http.HttpHeaders;
 import io.netty.handler.codec.http.HttpMethod;
-import io.netty.handler.codec.http.HttpObject;
-import io.netty.handler.codec.http.HttpResponse;
 import io.netty.handler.codec.http.HttpVersion;
-import io.netty.handler.codec.http.LastHttpContent;
 import io.netty.handler.codec.http2.Http2SecurityUtil;
 import io.netty.handler.codec.http2.HttpConversionUtil;
 import io.netty.handler.ssl.ApplicationProtocolConfig;
@@ -61,11 +53,11 @@ import java.net.URI;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import javax.net.ssl.SSLException;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.scheduling.annotation.EnableAsync;
 import org.springframework.scheduling.annotation.EnableScheduling;
@@ -76,6 +68,8 @@ import org.springframework.stereotype.Service;
 @EnableAsync
 @EnableScheduling
 public class LoaderService {
+
+    private final ReportService reportService;
 
     enum Proto {
         HTTPS_1(true),
@@ -125,11 +119,11 @@ public class LoaderService {
             return null;
         }
 
-        public ChannelInitializer initializer() {
+        public ChannelInitializer initializer(final ReportService reportService) {
             if (this == HTTP_2 || this == HTTPS_2) {
-                return new Http2ClientInitializer(sslContext(), Integer.MAX_VALUE);
+                return new Http2ClientInitializer(sslContext(), Integer.MAX_VALUE, reportService);
             }
-            return new Http1ClientInitializer(sslContext(), finished);
+            return new Http1ClientInitializer(sslContext(), finished, reportService);
         }
 
         public static Proto schemaToProto(String schema) {
@@ -154,7 +148,7 @@ public class LoaderService {
     private static final int NUM_CORES = Runtime.getRuntime().availableProcessors();
 
     private final int numConn = Integer.parseInt(System.getProperty("taurina.numconn", "10"));
-    private final int durationSec = Integer.parseInt(System.getProperty("taurina.duration", "5"));
+    private final int durationSec = Integer.parseInt(System.getProperty("taurina.duration", "30"));
     private final HttpMethod method = HttpMethod.GET;
     private final String uriStr = System.getProperty("taurina.uri", "h2c://127.0.0.1:8445");
     private final URI uri = URI.create(uriStr);
@@ -165,6 +159,11 @@ public class LoaderService {
     private final HttpHeaders headers = new DefaultHttpHeaders()
         .add(HOST, uri.getHost() + (uri.getPort() > 0 ? ":" + uri.getPort() : ""))
         .add(HttpConversionUtil.ExtensionHeaderNames.SCHEME.text(), convertSchemeIfNecessary(uri.getScheme()));
+
+    @Autowired
+    public LoaderService(ReportService reportService) {
+        this.reportService = reportService;
+    }
 
     private String convertSchemeIfNecessary(String scheme) {
         return scheme.replace("h2c", "https").replace("h2", "http");
@@ -223,6 +222,8 @@ public class LoaderService {
                 }
                 TimeUnit.MILLISECONDS.sleep(1L);
             }
+            reportService.showReport(start.get());
+            reportService.reset();
 
             CountDownLatch latch = new CountDownLatch(channels.length - 1);
             for (Channel channel : channels) {
@@ -250,7 +251,7 @@ public class LoaderService {
     }
 
     private Channel newChannel(final Bootstrap bootstrap, AtomicBoolean finished, Proto proto) throws InterruptedException {
-        final Channel channel = bootstrap.clone().handler(proto.initializer()).connect(uri.getHost(), uri.getPort()).sync().channel();
+        final Channel channel = bootstrap.clone().handler(proto.initializer(reportService)).connect(uri.getHost(), uri.getPort()).sync().channel();
         channel.eventLoop().scheduleAtFixedRate(() -> {
             if (channel.isActive() && !finished.get()) {
                 channel.writeAndFlush(request.copy());

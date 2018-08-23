@@ -10,6 +10,7 @@ import io.netty.handler.codec.http2.*;
 import io.netty.handler.ssl.ApplicationProtocolNames;
 import io.netty.handler.ssl.ApplicationProtocolNegotiationHandler;
 import io.netty.handler.ssl.SslContext;
+import java.util.concurrent.TimeUnit;
 
 import static io.netty.handler.logging.LogLevel.INFO;
 
@@ -20,13 +21,14 @@ public class Http2ClientInitializer extends ChannelInitializer<SocketChannel> {
 
     private final SslContext sslCtx;
     private final int maxContentLength;
+    private final ReportService reportService;
     private HttpToHttp2ConnectionHandler connectionHandler;
     private Http2ResponseHandler responseHandler;
-    private Http2SettingsHandler settingsHandler;
 
-    public Http2ClientInitializer(SslContext sslCtx, int maxContentLength) {
+    public Http2ClientInitializer(SslContext sslCtx, int maxContentLength, ReportService reportService) {
         this.sslCtx = sslCtx;
         this.maxContentLength = maxContentLength;
+        this.reportService = reportService;
     }
 
     @Override
@@ -41,8 +43,7 @@ public class Http2ClientInitializer extends ChannelInitializer<SocketChannel> {
                                 .build()))
                 .connection(connection)
                 .build();
-        responseHandler = new Http2ResponseHandler();
-        settingsHandler = new Http2SettingsHandler(ch.newPromise());
+        responseHandler = new Http2ResponseHandler(reportService);
         if (sslCtx != null) {
             configureSsl(ch);
         } else {
@@ -51,7 +52,7 @@ public class Http2ClientInitializer extends ChannelInitializer<SocketChannel> {
     }
 
     protected void configureEndOfPipeline(ChannelPipeline pipeline) {
-        pipeline.addLast(settingsHandler, responseHandler);
+        pipeline.addLast(responseHandler);
     }
 
     /**

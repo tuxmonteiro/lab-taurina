@@ -21,6 +21,11 @@ import org.apache.commons.logging.LogFactory;
 public class Http2ResponseHandler extends SimpleChannelInboundHandler<FullHttpResponse> {
 
     private static final Log LOGGER = LogFactory.getLog(LoaderService.class);
+    private final ReportService reportService;
+
+    public Http2ResponseHandler(ReportService reportService) {
+        this.reportService = reportService;
+    }
 
     @Override
     protected void channelRead0(ChannelHandlerContext ctx, FullHttpResponse msg) throws Exception {
@@ -34,6 +39,8 @@ public class Http2ResponseHandler extends SimpleChannelInboundHandler<FullHttpRe
         final ByteBuf content = msg.content();
         if (content.isReadable()) {
             int contentLength = content.readableBytes();
+            reportService.bodySizeAccumalator(contentLength);
+            reportService.responseCount();
             byte[] arr = new byte[contentLength];
             content.readBytes(arr);
             if (LOGGER.isDebugEnabled()) {
