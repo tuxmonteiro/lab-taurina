@@ -150,7 +150,7 @@ public class LoaderService {
     private final int numConn = Integer.parseInt(System.getProperty("taurina.numconn", "10"));
     private final int durationSec = Integer.parseInt(System.getProperty("taurina.duration", "30"));
     private final HttpMethod method = HttpMethod.GET;
-    private final String uriStr = System.getProperty("taurina.uri", "h2c://127.0.0.1:8445");
+    private final String uriStr = System.getProperty("taurina.uri", "http://127.0.0.1:8030");
     private final URI uri = URI.create(uriStr);
     private final String path = System.getProperty("taurina.targetpath", "/");
     private final int threads = Integer.parseInt(System.getProperty("taurina.threads",

@@ -21,13 +21,13 @@ class Http1ClientHandler extends SimpleChannelInboundHandler<HttpObject> {
 
     @Override
     public void channelActive(ChannelHandlerContext ctx) throws Exception {
-//        CHANNELS_ACTIVE.incrementAndGet();
+        reportService.connIncr();
         super.channelActive(ctx);
     }
 
     @Override
     public void channelInactive(ChannelHandlerContext ctx) throws Exception {
-//        CHANNELS_ACTIVE.decrementAndGet();
+        reportService.connDecr();
         super.channelInactive(ctx);
     }
 
@@ -35,7 +35,7 @@ class Http1ClientHandler extends SimpleChannelInboundHandler<HttpObject> {
     public void channelRead0(ChannelHandlerContext channelHandlerContext, HttpObject msg) throws Exception {
 
         if (msg instanceof HttpResponse) {
-            reportService.responseCount();
+            reportService.responseIncr();
             HttpResponse response = (HttpResponse) msg;
             reportService.bodySizeAccumalator(response.toString().length());
         }
