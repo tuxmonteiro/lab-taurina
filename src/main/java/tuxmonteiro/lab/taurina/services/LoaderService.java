@@ -140,8 +140,6 @@ public class LoaderService {
 
     private static final int NUM_CORES = Runtime.getRuntime().availableProcessors();
 
-    private final Object lock = new Object();
-
     private final int numConn = Integer.parseInt(System.getProperty("taurina.numconn", "10"));
     private final int durationSec = Integer.parseInt(System.getProperty("taurina.duration", "30"));
     private final HttpMethod method = HttpMethod.GET;
