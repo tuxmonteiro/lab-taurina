@@ -181,7 +181,7 @@ public class LoaderService {
             String path = pathFromURI == null || pathFromURI.isEmpty() ? "/" : pathFromURI;
 
             HashMap bodyJson = ((methodStr != null) && !methodStr.equalsIgnoreCase("GET")) ? (HashMap) hashMap.get("body") : null;
-            HashMap auth =  Optional.ofNullable((HashMap) hashMap.get("auth")).orElse(null);
+            Map auth =  Optional.ofNullable((Map) hashMap.get("auth")).orElse(Collections.emptyMap());
 
             final HttpHeaders headers = new DefaultHttpHeaders()
                 .add(HOST, uriFromJson.getHost() + (uriFromJson.getPort() > 0 ? ":" + uriFromJson.getPort() : ""))
