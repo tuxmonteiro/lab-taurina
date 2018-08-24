@@ -18,6 +18,7 @@ package tuxmonteiro.lab.taurina.services;
 
 import static io.netty.handler.codec.http.HttpHeaderNames.HOST;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
@@ -49,7 +50,12 @@ import io.netty.handler.ssl.SslContextBuilder;
 import io.netty.handler.ssl.SslProvider;
 import io.netty.handler.ssl.SupportedCipherSuiteFilter;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
+import java.io.IOException;
 import java.net.URI;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
@@ -82,12 +88,8 @@ public class LoaderService {
             this.ssl = ssl;
         }
 
-        public boolean isSsl() {
-            return ssl;
-        }
-
         public SslContext sslContext() {
-            if (isSsl()) {
+            if (ssl) {
                 try {
                     final SslProvider provider = OpenSsl.isAlpnSupported() ? SslProvider.OPENSSL : SslProvider.JDK;
                     return SslContextBuilder.forClient()
@@ -140,18 +142,7 @@ public class LoaderService {
 
     private static final int NUM_CORES = Runtime.getRuntime().availableProcessors();
 
-    private final int numConn = Integer.parseInt(System.getProperty("taurina.numconn", "10"));
-    private final int durationSec = Integer.parseInt(System.getProperty("taurina.duration", "30"));
-    private final HttpMethod method = HttpMethod.GET;
-    private final String uriStr = System.getProperty("taurina.uri", "http://127.0.0.1:8030");
-    private final URI uri = URI.create(uriStr);
-    private final String path = System.getProperty("taurina.targetpath", "/");
-    private final int threads = Integer.parseInt(System.getProperty("taurina.threads",
-        String.valueOf(NUM_CORES > numConn ? numConn : NUM_CORES)));
-
-    private final HttpHeaders headers = new DefaultHttpHeaders()
-        .add(HOST, uri.getHost() + (uri.getPort() > 0 ? ":" + uri.getPort() : ""))
-        .add(HttpConversionUtil.ExtensionHeaderNames.SCHEME.text(), convertSchemeIfNecessary(uri.getScheme()));
+    private final ObjectMapper mapper = new ObjectMapper();
 
     @Autowired
     public LoaderService(ReportService reportService) {
@@ -161,9 +152,6 @@ public class LoaderService {
     private String convertSchemeIfNecessary(String scheme) {
         return scheme.replace("h2c", "https").replace("h2", "http");
     }
-
-    private final FullHttpRequest request = new DefaultFullHttpRequest(
-        HttpVersion.HTTP_1_1, method, path, Unpooled.buffer(0), headers, new DefaultHttpHeaders());
 
     private AtomicLong start = new AtomicLong(0L);
 
@@ -175,19 +163,48 @@ public class LoaderService {
         } else {
             start.set(-1);
         }
-        LOGGER.info("Using " + threads + " thread(s)");
 
-        final Proto proto = Proto.schemaToProto(uri.getScheme());
-        final EventLoopGroup group = getEventLoopGroup(threads);
-        final Bootstrap bootstrap = newBootstrap(group);
-
+        EventLoopGroup group = null;
         try {
+            String jsonStr = "{\"uri\":\"http://127.0.0.1:8030\"}";
+
+            HashMap hashMap = mapper.readValue(jsonStr, HashMap.class);
+
+            String uriStr = (String) hashMap.get("uri");
+            String methodStr = Optional.ofNullable((String) hashMap.get("method")).orElse("GET");
+            HttpMethod method = HttpMethod.valueOf(methodStr);
+            int numConn = Optional.ofNullable((Integer) hashMap.get("numConn")).orElse(10);
+            int durationSec = Optional.ofNullable((Integer) hashMap.get("durationTimeMillis")).orElse(30000) / 1000;
+            URI uriFromJson = URI.create(uriStr);
+            String pathFromURI = uriFromJson.getRawPath();
+            String path = pathFromURI == null || pathFromURI.isEmpty() ? "/" : pathFromURI;
+
+            final HttpHeaders headers = new DefaultHttpHeaders()
+                .add(HOST, uriFromJson.getHost() + (uriFromJson.getPort() > 0 ? ":" + uriFromJson.getPort() : ""))
+                .add(HttpConversionUtil.ExtensionHeaderNames.SCHEME.text(), convertSchemeIfNecessary(uriFromJson.getScheme()));
+
+            // TODO: Check cast
+            @SuppressWarnings("unchecked")
+            Map<String, String> headersFromJson = Optional.ofNullable((Map<String, String>) hashMap.get("headers")).orElse(Collections.emptyMap());
+            headersFromJson.forEach(headers::add);
+
+            final FullHttpRequest request = new DefaultFullHttpRequest(
+                HttpVersion.HTTP_1_1, method, path, Unpooled.buffer(0), headers, new DefaultHttpHeaders());
+            int threads = Integer.parseInt(System.getProperty("taurina.threads",
+                String.valueOf(NUM_CORES > numConn ? numConn : NUM_CORES)));
+
+            LOGGER.info("Using " + threads + " thread(s)");
+
+            group = getEventLoopGroup(threads);
+            final Proto proto = Proto.schemaToProto(uriFromJson.getScheme());
+            final Bootstrap bootstrap = newBootstrap(group);
+
             Channel[] channels = new Channel[numConn];
-            activeChanels(proto, bootstrap, channels);
+            activeChanels(numConn, proto, bootstrap, channels, uriFromJson, request);
 
             start.set(System.currentTimeMillis());
 
-            reconnectIfNecessary(proto, group, bootstrap, channels);
+            reconnectIfNecessary(numConn, proto, group, bootstrap, channels, uriFromJson, request);
 
             TimeUnit.SECONDS.sleep(durationSec);
 
@@ -196,20 +213,20 @@ public class LoaderService {
 
             closeChannels(group, channels, 5, TimeUnit.SECONDS);
 
-        } catch (InterruptedException e) {
+        } catch (IOException | InterruptedException e) {
             if (LOGGER.isDebugEnabled()) {
                 LOGGER.debug(e.getMessage(), e);
             }
         } finally {
-            if (!group.isShuttingDown()) {
+            if (group != null && !group.isShuttingDown()) {
                 group.shutdownGracefully();
             }
         }
     }
 
-    private void reconnectIfNecessary(final Proto proto, final EventLoopGroup group, Bootstrap bootstrap, Channel[] channels) {
+    private void reconnectIfNecessary(int numConn, final Proto proto, final EventLoopGroup group, Bootstrap bootstrap, Channel[] channels, URI uri, FullHttpRequest request) {
         group.scheduleAtFixedRate(() ->
-            activeChanels(proto, bootstrap, channels), 100, 100, TimeUnit.MICROSECONDS);
+            activeChanels(numConn, proto, bootstrap, channels, uri, request), 100, 100, TimeUnit.MICROSECONDS);
     }
 
     private Bootstrap newBootstrap(EventLoopGroup group) {
@@ -250,10 +267,10 @@ public class LoaderService {
         }
     }
 
-    private synchronized void activeChanels(final Proto proto, final Bootstrap bootstrap, final Channel[] channels) {
+    private synchronized void activeChanels(int numConn, final Proto proto, final Bootstrap bootstrap, final Channel[] channels, URI uri, FullHttpRequest request) {
         for (int chanId = 0; chanId < numConn; chanId++) {
             if (channels[chanId] == null || !channels[chanId].isActive()) {
-                Channel channel = newChannel(bootstrap, proto);
+                Channel channel = newChannel(bootstrap, proto, uri, request);
                 if (channel != null) {
                     channels[chanId] = channel;
                 }
@@ -261,7 +278,7 @@ public class LoaderService {
         }
     }
 
-    private Channel newChannel(final Bootstrap bootstrap, Proto proto) {
+    private Channel newChannel(final Bootstrap bootstrap, Proto proto, URI uri, FullHttpRequest request) {
         try {
             final Channel channel = bootstrap
                                         .clone()
