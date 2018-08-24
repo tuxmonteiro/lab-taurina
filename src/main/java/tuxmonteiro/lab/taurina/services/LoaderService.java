@@ -16,8 +16,6 @@
 
 package tuxmonteiro.lab.taurina.services;
 
-import static io.netty.handler.codec.http.HttpHeaderNames.HOST;
-
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
@@ -32,25 +30,24 @@ import io.netty.channel.kqueue.KQueueEventLoopGroup;
 import io.netty.channel.kqueue.KQueueSocketChannel;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.nio.NioSocketChannel;
-import io.netty.handler.codec.http.DefaultFullHttpRequest;
-import io.netty.handler.codec.http.DefaultHttpHeaders;
-import io.netty.handler.codec.http.FullHttpRequest;
-import io.netty.handler.codec.http.HttpHeaders;
-import io.netty.handler.codec.http.HttpMethod;
-import io.netty.handler.codec.http.HttpVersion;
+import io.netty.handler.codec.http.*;
 import io.netty.handler.codec.http2.Http2SecurityUtil;
 import io.netty.handler.codec.http2.HttpConversionUtil;
-import io.netty.handler.ssl.ApplicationProtocolConfig;
+import io.netty.handler.ssl.*;
 import io.netty.handler.ssl.ApplicationProtocolConfig.Protocol;
 import io.netty.handler.ssl.ApplicationProtocolConfig.SelectedListenerFailureBehavior;
 import io.netty.handler.ssl.ApplicationProtocolConfig.SelectorFailureBehavior;
-import io.netty.handler.ssl.ApplicationProtocolNames;
-import io.netty.handler.ssl.OpenSsl;
-import io.netty.handler.ssl.SslContext;
-import io.netty.handler.ssl.SslContextBuilder;
-import io.netty.handler.ssl.SslProvider;
-import io.netty.handler.ssl.SupportedCipherSuiteFilter;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.scheduling.annotation.Async;
+import org.springframework.scheduling.annotation.EnableAsync;
+import org.springframework.scheduling.annotation.EnableScheduling;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Service;
+
+import javax.net.ssl.SSLException;
 import java.io.IOException;
 import java.net.URI;
 import java.util.Collections;
@@ -60,15 +57,8 @@ import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
-import javax.net.ssl.SSLException;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.scheduling.annotation.Async;
-import org.springframework.scheduling.annotation.EnableAsync;
-import org.springframework.scheduling.annotation.EnableScheduling;
-import org.springframework.scheduling.annotation.Scheduled;
-import org.springframework.stereotype.Service;
+
+import static io.netty.handler.codec.http.HttpHeaderNames.HOST;
 
 @Service
 @EnableAsync
@@ -180,7 +170,7 @@ public class LoaderService {
             String pathFromURI = uriFromJson.getRawPath();
             String path = pathFromURI == null || pathFromURI.isEmpty() ? "/" : pathFromURI;
 
-            HashMap bodyJson = ((methodStr != null) && !methodStr.equalsIgnoreCase("GET")) ? (HashMap) hashMap.get("body") : null;
+            HashMap bodyJson = !methodStr.equalsIgnoreCase("GET") ? (HashMap) hashMap.get("body") : null;
             Map auth =  Optional.ofNullable((Map) hashMap.get("auth")).orElse(Collections.emptyMap());
 
             final HttpHeaders headers = new DefaultHttpHeaders()
@@ -190,7 +180,7 @@ public class LoaderService {
             headers.add("Authorization",auth.toString());
             ByteBuf body = Unpooled.buffer(0);
 
-            if(methodStr != null && !methodStr.equalsIgnoreCase("GET")) body.writeBytes(bodyJson.toString().getBytes());
+            if(bodyJson != null && !methodStr.equalsIgnoreCase("GET")) body.writeBytes(bodyJson.toString().getBytes());
 
             // TODO: Check cast
             @SuppressWarnings("unchecked")
@@ -201,9 +191,6 @@ public class LoaderService {
                 HttpVersion.HTTP_1_1, method, path, Unpooled.buffer(0), headers, new DefaultHttpHeaders());
             int threads = Integer.parseInt(System.getProperty("taurina.threads",
                 String.valueOf(NUM_CORES > numConn ? numConn : NUM_CORES)));
-
-
-
 
             LOGGER.info("Using " + threads + " thread(s)");
 
