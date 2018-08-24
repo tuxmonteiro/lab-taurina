@@ -6,28 +6,24 @@ import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.handler.codec.http.HttpContent;
 import io.netty.handler.codec.http.HttpObject;
 import io.netty.handler.codec.http.HttpResponse;
-import io.netty.handler.codec.http.LastHttpContent;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 class Http1ClientHandler extends SimpleChannelInboundHandler<HttpObject> {
 
-    private final AtomicBoolean finished;
     private final ReportService reportService;
 
-    public Http1ClientHandler(AtomicBoolean finished, ReportService reportService) {
-        this.finished = finished;
+    public Http1ClientHandler(ReportService reportService) {
         this.reportService = reportService;
     }
 
     @Override
     public void channelActive(ChannelHandlerContext ctx) throws Exception {
-//        CHANNELS_ACTIVE.incrementAndGet();
+        reportService.connIncr();
         super.channelActive(ctx);
     }
 
     @Override
     public void channelInactive(ChannelHandlerContext ctx) throws Exception {
-//        CHANNELS_ACTIVE.decrementAndGet();
+        reportService.connDecr();
         super.channelInactive(ctx);
     }
 
@@ -35,7 +31,7 @@ class Http1ClientHandler extends SimpleChannelInboundHandler<HttpObject> {
     public void channelRead0(ChannelHandlerContext channelHandlerContext, HttpObject msg) throws Exception {
 
         if (msg instanceof HttpResponse) {
-            reportService.responseCount();
+            reportService.responseIncr();
             HttpResponse response = (HttpResponse) msg;
             reportService.bodySizeAccumalator(response.toString().length());
         }
@@ -45,9 +41,6 @@ class Http1ClientHandler extends SimpleChannelInboundHandler<HttpObject> {
             ByteBuf byteBuf = content.content();
             if (byteBuf.isReadable()) {
                 reportService.bodySizeAccumalator(byteBuf.readableBytes());
-            }
-            if (content instanceof LastHttpContent && finished.get()) {
-                channelHandlerContext.close();
             }
         }
     }

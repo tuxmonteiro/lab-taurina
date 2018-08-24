@@ -5,14 +5,21 @@ import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelPipeline;
 import io.netty.channel.socket.SocketChannel;
-import io.netty.handler.codec.http.*;
-import io.netty.handler.codec.http2.*;
+import io.netty.handler.codec.http.DefaultFullHttpRequest;
+import io.netty.handler.codec.http.HttpClientCodec;
+import io.netty.handler.codec.http.HttpClientUpgradeHandler;
+import io.netty.handler.codec.http.HttpMethod;
+import io.netty.handler.codec.http.HttpVersion;
+import io.netty.handler.codec.http2.DefaultHttp2Connection;
+import io.netty.handler.codec.http2.DelegatingDecompressorFrameListener;
+import io.netty.handler.codec.http2.Http2ClientUpgradeCodec;
+import io.netty.handler.codec.http2.Http2Connection;
+import io.netty.handler.codec.http2.HttpToHttp2ConnectionHandler;
+import io.netty.handler.codec.http2.HttpToHttp2ConnectionHandlerBuilder;
+import io.netty.handler.codec.http2.InboundHttp2ToHttpAdapterBuilder;
 import io.netty.handler.ssl.ApplicationProtocolNames;
 import io.netty.handler.ssl.ApplicationProtocolNegotiationHandler;
 import io.netty.handler.ssl.SslContext;
-import java.util.concurrent.TimeUnit;
-
-import static io.netty.handler.logging.LogLevel.INFO;
 
 /**
  * Configures the client pipeline to support HTTP/2 frames.
@@ -51,10 +58,6 @@ public class Http2ClientInitializer extends ChannelInitializer<SocketChannel> {
         }
     }
 
-    protected void configureEndOfPipeline(ChannelPipeline pipeline) {
-        pipeline.addLast(responseHandler);
-    }
-
     /**
      * Configure the pipeline for TLS NPN negotiation to HTTP/2.
      */
@@ -69,7 +72,7 @@ public class Http2ClientInitializer extends ChannelInitializer<SocketChannel> {
                 if (ApplicationProtocolNames.HTTP_2.equals(protocol)) {
                     ChannelPipeline p = ctx.pipeline();
                     p.addLast(connectionHandler);
-                    configureEndOfPipeline(p);
+                    p.addLast(responseHandler);
                     return;
                 }
                 ctx.close();
@@ -86,7 +89,8 @@ public class Http2ClientInitializer extends ChannelInitializer<SocketChannel> {
         Http2ClientUpgradeCodec upgradeCodec = new Http2ClientUpgradeCodec(connectionHandler);
         HttpClientUpgradeHandler upgradeHandler = new HttpClientUpgradeHandler(sourceCodec, upgradeCodec, 65536);
 
-        ch.pipeline().addLast(sourceCodec,
+        ch.pipeline().addLast(
+                sourceCodec,
                 upgradeHandler,
                 new UpgradeRequestHandler(),
                 new UserEventLogger());
@@ -101,13 +105,12 @@ public class Http2ClientInitializer extends ChannelInitializer<SocketChannel> {
             DefaultFullHttpRequest upgradeRequest =
                     new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.GET, "/");
             ctx.writeAndFlush(upgradeRequest);
-
             ctx.fireChannelActive();
 
             // Done with this handler, remove it from the pipeline.
-            ctx.pipeline().remove(this);
-
-            configureEndOfPipeline(ctx.pipeline());
+            final ChannelPipeline pipeline = ctx.pipeline();
+            pipeline.remove(this);
+            pipeline.addLast(responseHandler);
         }
     }
 

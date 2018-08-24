@@ -10,28 +10,52 @@ public class ReportService {
 
     private static final Log LOGGER = LogFactory.getLog(ReportService.class);
 
-    private final AtomicInteger sizeTotal = new AtomicInteger(0);
-    private final AtomicInteger requestCounter = new AtomicInteger(0);
+    private final AtomicInteger sizeAccum = new AtomicInteger(0);
+    private final AtomicInteger responseCounter = new AtomicInteger(0);
+    private final AtomicInteger writeAsync = new AtomicInteger(0);
+    private final AtomicInteger connCounter = new AtomicInteger(0);
 
-    public void responseCount() {
-        requestCounter.incrementAndGet();
+    public void connIncr() {
+        connCounter.incrementAndGet();
+    }
+
+    public void connDecr() {
+        connCounter.decrementAndGet();
+    }
+
+    public void responseIncr() {
+        responseCounter.incrementAndGet();
+    }
+
+    public void writeAsyncIncr() {
+        writeAsync.incrementAndGet();
     }
 
     public void bodySizeAccumalator(int size) {
-        sizeTotal.addAndGet(size);
+        sizeAccum.addAndGet(size);
     }
 
     public void reset() {
-        requestCounter.set(0);
-        sizeTotal.set(0);
+        responseCounter.set(0);
+        writeAsync.set(0);
+        sizeAccum.set(0);
+        connCounter.set(0);
     }
 
     public void showReport(long start) {
         long durationSec = (System.currentTimeMillis() - start) / 1_000L;
-        LOGGER.info("request total: " + requestCounter.get());
-        LOGGER.info("size total: " + sizeTotal.get());
-        LOGGER.info("rps: " + requestCounter.get() / durationSec);
-        LOGGER.info("size avg: " + sizeTotal.get() / durationSec);
+        int numResp = responseCounter.get();
+        int numWrites = writeAsync.get();
+        int sizeTotalKb = sizeAccum.get() / 1024;
+
+        LOGGER.info("total running : " + durationSec + " sec");
+        LOGGER.info("conns: " + connCounter.get());
+        LOGGER.info("writes total: " + numWrites);
+        LOGGER.info("responses total: " + numResp);
+        LOGGER.info("rate writes/resps: " + (numWrites * 1.0) / (numResp * 1.0));
+        LOGGER.info("size total (kb): " + sizeTotalKb);
+        LOGGER.info("rps: " + numResp / durationSec);
+        LOGGER.info("size avg (kb/s): " + sizeTotalKb / durationSec);
     }
 
 }
