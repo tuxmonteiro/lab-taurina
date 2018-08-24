@@ -25,12 +25,6 @@ import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
-import io.netty.channel.epoll.EpollEventLoopGroup;
-import io.netty.channel.epoll.EpollSocketChannel;
-import io.netty.channel.kqueue.KQueueEventLoopGroup;
-import io.netty.channel.kqueue.KQueueSocketChannel;
-import io.netty.channel.nio.NioEventLoopGroup;
-import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.codec.http.DefaultFullHttpRequest;
 import io.netty.handler.codec.http.DefaultHttpHeaders;
 import io.netty.handler.codec.http.FullHttpRequest;
@@ -46,7 +40,6 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import org.apache.commons.logging.Log;
@@ -57,7 +50,9 @@ import org.springframework.scheduling.annotation.EnableAsync;
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import tuxmonteiro.lab.taurina.entity.ReportService;
 import tuxmonteiro.lab.taurina.enumerator.Proto;
+import tuxmonteiro.lab.taurina.nettyutils.ChannelManager;
 
 @Service
 @EnableAsync
@@ -67,12 +62,13 @@ public class LoaderService {
     private final ReportService reportService;
 
     private static final Log LOGGER = LogFactory.getLog(LoaderService.class);
-    private static final boolean IS_MAC = isMac();
-    private static final boolean IS_LINUX = isLinux();
 
     private static final int NUM_CORES = Runtime.getRuntime().availableProcessors();
 
     private final ObjectMapper mapper = new ObjectMapper();
+
+
+    private ChannelManager channelManager;
 
     @Autowired
     public LoaderService(ReportService reportService) {
@@ -94,6 +90,7 @@ public class LoaderService {
             start.set(-1);
         }
 
+        channelManager = new ChannelManager(reportService);
         EventLoopGroup group = null;
         try {
             String jsonStr = "{\"uri\":\"http://127.0.0.1:8030\", \"method\":\"POST\", \"body\" :\"\" }";
@@ -137,23 +134,23 @@ public class LoaderService {
 
             LOGGER.info("Using " + threads + " thread(s)");
 
-            group = getEventLoopGroup(threads);
+            group = channelManager.getEventLoopGroup(threads);
             final Proto proto = Proto.schemaToProto(uriFromJson.getScheme());
             final Bootstrap bootstrap = newBootstrap(group);
 
             Channel[] channels = new Channel[numConn];
-            activeChanels(numConn, proto, bootstrap, channels, uriFromJson, request);
+            channelManager.activeChanels(numConn, proto, bootstrap, channels, uriFromJson, request);
 
             start.set(System.currentTimeMillis());
 
-            reconnectIfNecessary(numConn, proto, group, bootstrap, channels, uriFromJson, request);
+            channelManager.reconnectIfNecessary(numConn, proto, group, bootstrap, channels, uriFromJson, request);
 
             TimeUnit.SECONDS.sleep(durationSec);
 
             reportService.showReport(start.get());
             reportService.reset();
 
-            closeChannels(group, channels, 5, TimeUnit.SECONDS);
+            channelManager.closeChannels(group, channels, 5, TimeUnit.SECONDS);
 
         } catch (IOException | InterruptedException e) {
             if (LOGGER.isDebugEnabled()) {
@@ -166,117 +163,15 @@ public class LoaderService {
         }
     }
 
-    private void reconnectIfNecessary(int numConn, final Proto proto, final EventLoopGroup group, Bootstrap bootstrap, Channel[] channels, URI uri, FullHttpRequest request) {
-        group.scheduleAtFixedRate(() ->
-            activeChanels(numConn, proto, bootstrap, channels, uri, request), 100, 100, TimeUnit.MICROSECONDS);
-    }
-
     private Bootstrap newBootstrap(EventLoopGroup group) {
         Bootstrap bootstrap = new Bootstrap();
         bootstrap.
             group(group).
-            channel(getSocketChannelClass()).
+            channel(channelManager.getSocketChannelClass()).
             option(ChannelOption.SO_KEEPALIVE, true).
             option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 60000).
             option(ChannelOption.TCP_NODELAY, true).
             option(ChannelOption.SO_REUSEADDR, true);
         return bootstrap;
     }
-
-    private void closeChannels(EventLoopGroup group, Channel[] channels, int timeout, TimeUnit unit) throws InterruptedException {
-        CountDownLatch latch = new CountDownLatch(channels.length - 1);
-        for (Channel channel : channels) {
-            group.execute(() -> {
-                closeChannel(latch, channel);
-            });
-        }
-        latch.await(timeout, unit);
-    }
-
-
-
-    private void closeChannel(final CountDownLatch latch, final Channel channel) {
-        if (channel.isActive()) {
-            try {
-                channel.closeFuture().sync();
-            } catch (Exception e) {
-                if (LOGGER.isDebugEnabled()) {
-                    LOGGER.debug(e.getMessage(), e);
-                }
-            } finally {
-                latch.countDown();
-            }
-        }
-    }
-
-    private synchronized void activeChanels(int numConn, final Proto proto, final Bootstrap bootstrap, final Channel[] channels, URI uri, FullHttpRequest request) {
-        for (int chanId = 0; chanId < numConn; chanId++) {
-            if (channels[chanId] == null || !channels[chanId].isActive()) {
-                Channel channel = newChannel(bootstrap, proto, uri, request);
-                if (channel != null) {
-                    channels[chanId] = channel;
-                }
-            }
-        }
-    }
-
-    private Channel newChannel(final Bootstrap bootstrap, Proto proto, URI uri, FullHttpRequest request) {
-        try {
-            final Channel channel = bootstrap
-                                        .clone()
-                                        .handler(proto.initializer(reportService))
-                                        .connect(uri.getHost(), uri.getPort())
-                                        .sync()
-                                        .channel() ;
-            channel.eventLoop().scheduleAtFixedRate(() -> {
-                if (channel.isActive()) {
-                    reportService.writeAsyncIncr();
-                    channel.writeAndFlush(request.copy());
-                }
-            }, 50, 50, TimeUnit.MICROSECONDS);
-            return channel;
-        } catch (InterruptedException e) {
-            if (LOGGER.isDebugEnabled()) {
-                LOGGER.debug(e.getMessage(), e);
-            }
-        }
-        return null;
-    }
-
-    private EventLoopGroup getEventLoopGroup(int numCores) {
-        // @formatter:off
-        return IS_MAC   ? new KQueueEventLoopGroup(numCores) :
-               IS_LINUX ? new EpollEventLoopGroup(numCores) :
-                          new NioEventLoopGroup(numCores);
-        // @formatter:on
-    }
-
-    private Class<? extends Channel> getSocketChannelClass() {
-        // @formatter:off
-        return IS_MAC   ? KQueueSocketChannel.class :
-               IS_LINUX ? EpollSocketChannel.class :
-                          NioSocketChannel.class;
-        // @formatter:on
-    }
-
-    private static String getOS() {
-        return System.getProperty("os.name", "UNDEF").toLowerCase();
-    }
-
-    private static boolean isMac() {
-        boolean result = getOS().startsWith("mac");
-        if (result) {
-            LOGGER.warn("Hello. I'm Mac");
-        }
-        return result;
-    }
-
-    private static boolean isLinux() {
-        boolean result = getOS().startsWith("linux");
-        if (result) {
-            LOGGER.warn("Hello. I'm Linux");
-        }
-        return result;
-    }
-
 }

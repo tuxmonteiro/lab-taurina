@@ -14,12 +14,9 @@ import io.netty.handler.ssl.SslProvider;
 import io.netty.handler.ssl.SupportedCipherSuiteFilter;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import javax.net.ssl.SSLException;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
-import tuxmonteiro.lab.taurina.services.Http1ClientInitializer;
-import tuxmonteiro.lab.taurina.services.Http2ClientInitializer;
-import tuxmonteiro.lab.taurina.services.LoaderService;
-import tuxmonteiro.lab.taurina.services.ReportService;
+import tuxmonteiro.lab.taurina.nettyutils.Http1ClientInitializer;
+import tuxmonteiro.lab.taurina.nettyutils.Http2ClientInitializer;
+import tuxmonteiro.lab.taurina.entity.ReportService;
 
 public enum Proto {
 

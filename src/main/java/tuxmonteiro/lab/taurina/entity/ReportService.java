@@ -1,4 +1,4 @@
-package tuxmonteiro.lab.taurina.services;
+package tuxmonteiro.lab.taurina.entity;
 
 import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.commons.logging.Log;

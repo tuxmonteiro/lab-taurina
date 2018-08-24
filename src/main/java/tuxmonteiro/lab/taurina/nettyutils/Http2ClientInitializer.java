@@ -1,4 +1,4 @@
-package tuxmonteiro.lab.taurina.services;
+package tuxmonteiro.lab.taurina.nettyutils;
 
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
@@ -20,6 +20,7 @@ import io.netty.handler.codec.http2.InboundHttp2ToHttpAdapterBuilder;
 import io.netty.handler.ssl.ApplicationProtocolNames;
 import io.netty.handler.ssl.ApplicationProtocolNegotiationHandler;
 import io.netty.handler.ssl.SslContext;
+import tuxmonteiro.lab.taurina.entity.ReportService;
 
 /**
  * Configures the client pipeline to support HTTP/2 frames.

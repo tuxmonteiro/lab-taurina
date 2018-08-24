@@ -1,4 +1,4 @@
-package tuxmonteiro.lab.taurina.services;
+package tuxmonteiro.lab.taurina.nettyutils;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
@@ -6,6 +6,7 @@ import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.handler.codec.http.HttpContent;
 import io.netty.handler.codec.http.HttpObject;
 import io.netty.handler.codec.http.HttpResponse;
+import tuxmonteiro.lab.taurina.entity.ReportService;
 
 class Http1ClientHandler extends SimpleChannelInboundHandler<HttpObject> {
 

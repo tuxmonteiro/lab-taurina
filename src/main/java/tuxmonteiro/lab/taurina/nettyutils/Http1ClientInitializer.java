@@ -1,8 +1,7 @@
-package tuxmonteiro.lab.taurina.services;
+package tuxmonteiro.lab.taurina.nettyutils;
 
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
-import io.netty.channel.ChannelInboundHandler;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelPipeline;
@@ -13,7 +12,7 @@ import io.netty.handler.ssl.SslContext;
 import io.netty.handler.timeout.IdleStateHandler;
 
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
+import tuxmonteiro.lab.taurina.entity.ReportService;
 
 public class Http1ClientInitializer extends ChannelInitializer<SocketChannel> {
 

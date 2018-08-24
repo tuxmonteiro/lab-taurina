@@ -1,4 +1,4 @@
-package tuxmonteiro.lab.taurina.services;
+package tuxmonteiro.lab.taurina.nettyutils;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
@@ -9,6 +9,8 @@ import io.netty.util.CharsetUtil;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import tuxmonteiro.lab.taurina.services.LoaderService;
+import tuxmonteiro.lab.taurina.entity.ReportService;
 
 public class Http2ResponseHandler extends SimpleChannelInboundHandler<FullHttpResponse> {
 
