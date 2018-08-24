@@ -6,16 +6,12 @@ import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.handler.codec.http.HttpContent;
 import io.netty.handler.codec.http.HttpObject;
 import io.netty.handler.codec.http.HttpResponse;
-import io.netty.handler.codec.http.LastHttpContent;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 class Http1ClientHandler extends SimpleChannelInboundHandler<HttpObject> {
 
-    private final AtomicBoolean finished;
     private final ReportService reportService;
 
-    public Http1ClientHandler(AtomicBoolean finished, ReportService reportService) {
-        this.finished = finished;
+    public Http1ClientHandler(ReportService reportService) {
         this.reportService = reportService;
     }
 
@@ -45,9 +41,6 @@ class Http1ClientHandler extends SimpleChannelInboundHandler<HttpObject> {
             ByteBuf byteBuf = content.content();
             if (byteBuf.isReadable()) {
                 reportService.bodySizeAccumalator(byteBuf.readableBytes());
-            }
-            if (content instanceof LastHttpContent && finished.get()) {
-                channelHandlerContext.close();
             }
         }
     }

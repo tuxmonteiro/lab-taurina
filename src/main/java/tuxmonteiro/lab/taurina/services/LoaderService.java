@@ -52,7 +52,6 @@ import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import java.net.URI;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import javax.net.ssl.SSLException;
 import org.apache.commons.logging.Log;
@@ -78,19 +77,13 @@ public class LoaderService {
         HTTP_2(false);
 
         private final boolean ssl;
-        private final AtomicBoolean finished;
 
         Proto(boolean ssl) {
-            this.finished = new AtomicBoolean(false);
             this.ssl = ssl;
         }
 
         public boolean isSsl() {
             return ssl;
-        }
-
-        public AtomicBoolean finished() {
-            return finished;
         }
 
         public SslContext sslContext() {
@@ -123,7 +116,7 @@ public class LoaderService {
             if (this == HTTP_2 || this == HTTPS_2) {
                 return new Http2ClientInitializer(sslContext(), Integer.MAX_VALUE, reportService);
             }
-            return new Http1ClientInitializer(sslContext(), finished, reportService);
+            return new Http1ClientInitializer(sslContext(), reportService);
         }
 
         public static Proto schemaToProto(String schema) {
@@ -137,7 +130,7 @@ public class LoaderService {
                 case "https":
                     return HTTPS_1;
             }
-            return null;
+            return Proto.valueOf(schema);
         }
     }
 
@@ -149,7 +142,7 @@ public class LoaderService {
 
     private final Object lock = new Object();
 
-    private final int numConn = Integer.parseInt(System.getProperty("taurina.numconn", "1000"));
+    private final int numConn = Integer.parseInt(System.getProperty("taurina.numconn", "10"));
     private final int durationSec = Integer.parseInt(System.getProperty("taurina.duration", "30"));
     private final HttpMethod method = HttpMethod.GET;
     private final String uriStr = System.getProperty("taurina.uri", "http://127.0.0.1:8030");
@@ -186,16 +179,42 @@ public class LoaderService {
         }
         LOGGER.info("Using " + threads + " thread(s)");
 
-        final EventLoopGroup group = getEventLoopGroup(threads);
-
         final Proto proto = Proto.schemaToProto(uri.getScheme());
-        if (proto == null) {
-            LOGGER.error(new IllegalStateException("Proto is NULL"));
-            return;
+        final EventLoopGroup group = getEventLoopGroup(threads);
+        final Bootstrap bootstrap = newBootstrap(group);
+
+        try {
+            Channel[] channels = new Channel[numConn];
+            activeChanels(proto, bootstrap, channels);
+
+            start.set(System.currentTimeMillis());
+
+            reconnectIfNecessary(proto, group, bootstrap, channels);
+
+            TimeUnit.SECONDS.sleep(durationSec);
+
+            reportService.showReport(start.get());
+            reportService.reset();
+
+            closeChannels(group, channels, 5, TimeUnit.SECONDS);
+
+        } catch (InterruptedException e) {
+            if (LOGGER.isDebugEnabled()) {
+                LOGGER.debug(e.getMessage(), e);
+            }
+        } finally {
+            if (!group.isShuttingDown()) {
+                group.shutdownGracefully();
+            }
         }
+    }
 
-        final AtomicBoolean finished = proto.finished();
+    private void reconnectIfNecessary(final Proto proto, final EventLoopGroup group, Bootstrap bootstrap, Channel[] channels) {
+        group.scheduleAtFixedRate(() ->
+            activeChanels(proto, bootstrap, channels), 100, 100, TimeUnit.MICROSECONDS);
+    }
 
+    private Bootstrap newBootstrap(EventLoopGroup group) {
         Bootstrap bootstrap = new Bootstrap();
         bootstrap.
             group(group).
@@ -204,87 +223,82 @@ public class LoaderService {
             option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 60000).
             option(ChannelOption.TCP_NODELAY, true).
             option(ChannelOption.SO_REUSEADDR, true);
+        return bootstrap;
+    }
 
-        Channel[] channels = new Channel[numConn];
+    private void closeChannels(EventLoopGroup group, Channel[] channels, int timeout, TimeUnit unit) throws InterruptedException {
+        CountDownLatch latch = new CountDownLatch(channels.length - 1);
+        for (Channel channel : channels) {
+            group.execute(() -> {
+                closeChannel(latch, channel);
+            });
+        }
+        latch.await(timeout, unit);
+    }
 
-        try {
-            for (int chanId = 0; chanId < numConn; chanId++) {
-                channels[chanId] = newChannel(bootstrap, proto);
-            }
 
-            start.set(System.currentTimeMillis());
-            group.schedule(() -> finished.set(true), durationSec, TimeUnit.SECONDS);
 
-            // reconnect if necessary
-            group.scheduleAtFixedRate(() -> {
-                synchronized (lock) {
-                    for (int chanId = 0; chanId < numConn; chanId++) {
-                        if (!channels[chanId].isActive()) {
-                            try {
-                                channels[chanId] = newChannel(bootstrap, proto);
-                            } catch (InterruptedException e) {
-                                // ignored
-                            }
-                        }
-                    }
+    private void closeChannel(final CountDownLatch latch, final Channel channel) {
+        if (channel.isActive()) {
+            try {
+                channel.closeFuture().sync();
+            } catch (Exception e) {
+                if (LOGGER.isDebugEnabled()) {
+                    LOGGER.debug(e.getMessage(), e);
                 }
-            }, 100, 100, TimeUnit.MICROSECONDS);
-
-            TimeUnit.SECONDS.sleep(durationSec);
-
-            reportService.showReport(start.get());
-            reportService.reset();
-
-            CountDownLatch latch = new CountDownLatch(channels.length - 1);
-            for (Channel channel : channels) {
-                group.execute(() -> {
-                    if (channel.isOpen()) {
-                        try {
-                            channel.closeFuture().sync();
-                        } catch (Exception e) {
-                            // ignored
-                        } finally {
-                            latch.countDown();
-                        }
-                    }
-                });
-            }
-            latch.await(5, TimeUnit.SECONDS);
-
-        } catch (InterruptedException e) {
-            LOGGER.error(e.getMessage(), e);
-        } finally {
-            if (!group.isShuttingDown()) {
-                group.shutdownGracefully();
+            } finally {
+                latch.countDown();
             }
         }
     }
 
-    private Channel newChannel(final Bootstrap bootstrap, Proto proto) throws InterruptedException {
-        final Channel channel = bootstrap.clone().handler(proto.initializer(reportService)).connect(uri.getHost(), uri.getPort()).sync().channel();
-        channel.eventLoop().scheduleAtFixedRate(() -> {
-            if (channel.isActive()) {
-                reportService.writeAsyncIncr();
-                channel.writeAndFlush(request.copy());
+    private synchronized void activeChanels(final Proto proto, final Bootstrap bootstrap, final Channel[] channels) {
+        for (int chanId = 0; chanId < numConn; chanId++) {
+            if (channels[chanId] == null || !channels[chanId].isActive()) {
+                Channel channel = newChannel(bootstrap, proto);
+                if (channel != null) {
+                    channels[chanId] = channel;
+                }
             }
-        }, 50, 50, TimeUnit.MICROSECONDS);
+        }
+    }
 
-        return channel;
+    private Channel newChannel(final Bootstrap bootstrap, Proto proto) {
+        try {
+            final Channel channel = bootstrap
+                                        .clone()
+                                        .handler(proto.initializer(reportService))
+                                        .connect(uri.getHost(), uri.getPort())
+                                        .sync()
+                                        .channel();
+            channel.eventLoop().scheduleAtFixedRate(() -> {
+                if (channel.isActive()) {
+                    reportService.writeAsyncIncr();
+                    channel.writeAndFlush(request.copy());
+                }
+            }, 50, 50, TimeUnit.MICROSECONDS);
+            return channel;
+        } catch (InterruptedException e) {
+            if (LOGGER.isDebugEnabled()) {
+                LOGGER.debug(e.getMessage(), e);
+            }
+        }
+        return null;
     }
 
     private EventLoopGroup getEventLoopGroup(int numCores) {
         // @formatter:off
-        return IS_MAC ? new KQueueEventLoopGroup(numCores) :
-                IS_LINUX ? new EpollEventLoopGroup(numCores) :
-                        new NioEventLoopGroup(numCores);
+        return IS_MAC   ? new KQueueEventLoopGroup(numCores) :
+               IS_LINUX ? new EpollEventLoopGroup(numCores) :
+                          new NioEventLoopGroup(numCores);
         // @formatter:on
     }
 
     private Class<? extends Channel> getSocketChannelClass() {
         // @formatter:off
-        return IS_MAC ? KQueueSocketChannel.class :
-                IS_LINUX ? EpollSocketChannel.class :
-                        NioSocketChannel.class;
+        return IS_MAC   ? KQueueSocketChannel.class :
+               IS_LINUX ? EpollSocketChannel.class :
+                          NioSocketChannel.class;
         // @formatter:on
     }
 
