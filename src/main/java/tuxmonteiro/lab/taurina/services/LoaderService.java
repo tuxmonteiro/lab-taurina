@@ -20,6 +20,7 @@ import static io.netty.handler.codec.http.HttpHeaderNames.HOST;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.netty.bootstrap.Bootstrap;
+import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelInitializer;
@@ -179,9 +180,17 @@ public class LoaderService {
             String pathFromURI = uriFromJson.getRawPath();
             String path = pathFromURI == null || pathFromURI.isEmpty() ? "/" : pathFromURI;
 
+            HashMap bodyJson = ((methodStr != null) && !methodStr.equalsIgnoreCase("GET")) ? (HashMap) hashMap.get("body") : null;
+            HashMap auth =  Optional.ofNullable((HashMap) hashMap.get("auth")).orElse(null);
+
             final HttpHeaders headers = new DefaultHttpHeaders()
                 .add(HOST, uriFromJson.getHost() + (uriFromJson.getPort() > 0 ? ":" + uriFromJson.getPort() : ""))
                 .add(HttpConversionUtil.ExtensionHeaderNames.SCHEME.text(), convertSchemeIfNecessary(uriFromJson.getScheme()));
+
+            headers.add("Authorization",auth.toString());
+            ByteBuf body = Unpooled.buffer(0);
+
+            if(methodStr != null && !methodStr.equalsIgnoreCase("GET")) body.writeBytes(bodyJson.toString().getBytes());
 
             // TODO: Check cast
             @SuppressWarnings("unchecked")
@@ -192,6 +201,9 @@ public class LoaderService {
                 HttpVersion.HTTP_1_1, method, path, Unpooled.buffer(0), headers, new DefaultHttpHeaders());
             int threads = Integer.parseInt(System.getProperty("taurina.threads",
                 String.valueOf(NUM_CORES > numConn ? numConn : NUM_CORES)));
+
+
+
 
             LOGGER.info("Using " + threads + " thread(s)");
 
@@ -285,7 +297,7 @@ public class LoaderService {
                                         .handler(proto.initializer(reportService))
                                         .connect(uri.getHost(), uri.getPort())
                                         .sync()
-                                        .channel();
+                                        .channel() ;
             channel.eventLoop().scheduleAtFixedRate(() -> {
                 if (channel.isActive()) {
                     reportService.writeAsyncIncr();
