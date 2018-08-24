@@ -147,7 +147,9 @@ public class LoaderService {
 
     private static final int NUM_CORES = Runtime.getRuntime().availableProcessors();
 
-    private final int numConn = Integer.parseInt(System.getProperty("taurina.numconn", "10"));
+    private final Object lock = new Object();
+
+    private final int numConn = Integer.parseInt(System.getProperty("taurina.numconn", "1000"));
     private final int durationSec = Integer.parseInt(System.getProperty("taurina.duration", "30"));
     private final HttpMethod method = HttpMethod.GET;
     private final String uriStr = System.getProperty("taurina.uri", "http://127.0.0.1:8030");
@@ -207,21 +209,29 @@ public class LoaderService {
 
         try {
             for (int chanId = 0; chanId < numConn; chanId++) {
-                channels[chanId] = newChannel(bootstrap, finished, proto);
+                channels[chanId] = newChannel(bootstrap, proto);
             }
 
             start.set(System.currentTimeMillis());
             group.schedule(() -> finished.set(true), durationSec, TimeUnit.SECONDS);
 
             // reconnect if necessary
-            while (!finished.get()) {
-                for (int chanId = 0; chanId < numConn; chanId++) {
-                    if (!(channels[chanId].isOpen() && channels[chanId].isActive())) {
-                        channels[chanId] = newChannel(bootstrap, finished, proto);
+            group.scheduleAtFixedRate(() -> {
+                synchronized (lock) {
+                    for (int chanId = 0; chanId < numConn; chanId++) {
+                        if (!channels[chanId].isActive()) {
+                            try {
+                                channels[chanId] = newChannel(bootstrap, proto);
+                            } catch (InterruptedException e) {
+                                // ignored
+                            }
+                        }
                     }
                 }
-                TimeUnit.MILLISECONDS.sleep(1L);
-            }
+            }, 100, 100, TimeUnit.MICROSECONDS);
+
+            TimeUnit.SECONDS.sleep(durationSec);
+
             reportService.showReport(start.get());
             reportService.reset();
 
@@ -250,13 +260,14 @@ public class LoaderService {
         }
     }
 
-    private Channel newChannel(final Bootstrap bootstrap, AtomicBoolean finished, Proto proto) throws InterruptedException {
+    private Channel newChannel(final Bootstrap bootstrap, Proto proto) throws InterruptedException {
         final Channel channel = bootstrap.clone().handler(proto.initializer(reportService)).connect(uri.getHost(), uri.getPort()).sync().channel();
         channel.eventLoop().scheduleAtFixedRate(() -> {
-            if (channel.isActive() && !finished.get()) {
+            if (channel.isActive()) {
+                reportService.writeAsyncIncr();
                 channel.writeAndFlush(request.copy());
             }
-        }, 1, 1, TimeUnit.MICROSECONDS);
+        }, 50, 50, TimeUnit.MICROSECONDS);
 
         return channel;
     }
