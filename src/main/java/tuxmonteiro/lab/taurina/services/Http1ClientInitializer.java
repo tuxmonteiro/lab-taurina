@@ -20,11 +20,13 @@ public class Http1ClientInitializer extends ChannelInitializer<SocketChannel> {
     private final SslContext sslContext;
     private final ChannelHandler handler;
 
-    public Http1ClientInitializer(SslContext sslContext,
-        /** AtomicBoolean finished, **/
-        ReportService reportService) {
+    public Http1ClientInitializer(
+        SslContext sslContext,
+        ReportService reportService,
+        CookieService cookieService) {
+
         this.sslContext = sslContext;
-        this.handler = new Http1ClientHandler(/** finished, **/ reportService);
+        this.handler = new Http1ClientHandler(reportService, cookieService);
     }
 
     @Override

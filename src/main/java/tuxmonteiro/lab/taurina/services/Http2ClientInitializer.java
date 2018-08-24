@@ -29,13 +29,20 @@ public class Http2ClientInitializer extends ChannelInitializer<SocketChannel> {
     private final SslContext sslCtx;
     private final int maxContentLength;
     private final ReportService reportService;
+    private final CookieService cookieService;
     private HttpToHttp2ConnectionHandler connectionHandler;
     private Http2ResponseHandler responseHandler;
 
-    public Http2ClientInitializer(SslContext sslCtx, int maxContentLength, ReportService reportService) {
+    public Http2ClientInitializer(
+        SslContext sslCtx,
+        int maxContentLength,
+        ReportService reportService,
+        CookieService cookieService) {
+
         this.sslCtx = sslCtx;
         this.maxContentLength = maxContentLength;
         this.reportService = reportService;
+        this.cookieService = cookieService;
     }
 
     @Override
@@ -50,7 +57,7 @@ public class Http2ClientInitializer extends ChannelInitializer<SocketChannel> {
                                 .build()))
                 .connection(connection)
                 .build();
-        responseHandler = new Http2ResponseHandler(reportService);
+        responseHandler = new Http2ResponseHandler(reportService, cookieService);
         if (sslCtx != null) {
             configureSsl(ch);
         } else {

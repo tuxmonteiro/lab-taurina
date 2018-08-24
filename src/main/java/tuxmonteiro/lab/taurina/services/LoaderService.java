@@ -75,6 +75,7 @@ import org.springframework.stereotype.Service;
 public class LoaderService {
 
     private final ReportService reportService;
+    private final CookieService cookieService;
 
     enum Proto {
         HTTPS_1(true),
@@ -114,11 +115,11 @@ public class LoaderService {
             return null;
         }
 
-        public ChannelInitializer initializer(final ReportService reportService) {
+        public ChannelInitializer initializer(final ReportService reportService, CookieService cookieService) {
             if (this == HTTP_2 || this == HTTPS_2) {
-                return new Http2ClientInitializer(sslContext(), Integer.MAX_VALUE, reportService);
+                return new Http2ClientInitializer(sslContext(), Integer.MAX_VALUE, reportService, cookieService);
             }
-            return new Http1ClientInitializer(sslContext(), reportService);
+            return new Http1ClientInitializer(sslContext(), reportService, cookieService);
         }
 
         public static Proto schemaToProto(String schema) {
@@ -145,8 +146,9 @@ public class LoaderService {
     private final ObjectMapper mapper = new ObjectMapper();
 
     @Autowired
-    public LoaderService(ReportService reportService) {
+    public LoaderService(ReportService reportService, CookieService cookieService) {
         this.reportService = reportService;
+        this.cookieService = cookieService;
     }
 
     private String convertSchemeIfNecessary(String scheme) {
@@ -210,6 +212,7 @@ public class LoaderService {
 
             reportService.showReport(start.get());
             reportService.reset();
+            cookieService.reset();
 
             closeChannels(group, channels, 5, TimeUnit.SECONDS);
 
@@ -282,13 +285,14 @@ public class LoaderService {
         try {
             final Channel channel = bootstrap
                                         .clone()
-                                        .handler(proto.initializer(reportService))
+                                        .handler(proto.initializer(reportService, cookieService))
                                         .connect(uri.getHost(), uri.getPort())
                                         .sync()
                                         .channel();
             channel.eventLoop().scheduleAtFixedRate(() -> {
                 if (channel.isActive()) {
-                    reportService.writeAsyncIncr();
+                    reportService.writeCounterIncr();
+                    cookieService.applyCookies(request.headers());
                     channel.writeAndFlush(request.copy());
                 }
             }, 50, 50, TimeUnit.MICROSECONDS);

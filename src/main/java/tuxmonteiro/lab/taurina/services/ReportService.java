@@ -27,7 +27,7 @@ public class ReportService {
         responseCounter.incrementAndGet();
     }
 
-    public void writeAsyncIncr() {
+    public void writeCounterIncr() {
         writeAsync.incrementAndGet();
     }
 

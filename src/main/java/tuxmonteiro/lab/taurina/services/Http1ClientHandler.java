@@ -10,9 +10,11 @@ import io.netty.handler.codec.http.HttpResponse;
 class Http1ClientHandler extends SimpleChannelInboundHandler<HttpObject> {
 
     private final ReportService reportService;
+    private final CookieService cookieService;
 
-    public Http1ClientHandler(ReportService reportService) {
+    public Http1ClientHandler(ReportService reportService, CookieService cookieService) {
         this.reportService = reportService;
+        this.cookieService = cookieService;
     }
 
     @Override
@@ -33,6 +35,7 @@ class Http1ClientHandler extends SimpleChannelInboundHandler<HttpObject> {
         if (msg instanceof HttpResponse) {
             reportService.responseIncr();
             HttpResponse response = (HttpResponse) msg;
+            cookieService.loadCookies(response.headers());
             reportService.bodySizeAccumalator(response.toString().length());
         }
 

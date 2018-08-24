@@ -4,6 +4,7 @@ import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.handler.codec.http.FullHttpResponse;
+import io.netty.handler.codec.http.HttpHeaders;
 import io.netty.handler.codec.http2.HttpConversionUtil;
 import io.netty.util.CharsetUtil;
 
@@ -14,9 +15,11 @@ public class Http2ResponseHandler extends SimpleChannelInboundHandler<FullHttpRe
 
     private static final Log LOGGER = LogFactory.getLog(LoaderService.class);
     private final ReportService reportService;
+    private final CookieService cookieService;
 
-    public Http2ResponseHandler(ReportService reportService) {
+    public Http2ResponseHandler(ReportService reportService, CookieService cookieService) {
         this.reportService = reportService;
+        this.cookieService = cookieService;
     }
 
     @Override
@@ -33,7 +36,9 @@ public class Http2ResponseHandler extends SimpleChannelInboundHandler<FullHttpRe
 
     @Override
     protected void channelRead0(ChannelHandlerContext ctx, FullHttpResponse msg) throws Exception {
-        Integer streamId = msg.headers().getInt(HttpConversionUtil.ExtensionHeaderNames.STREAM_ID.text());
+        HttpHeaders headers = msg.headers();
+        cookieService.loadCookies(headers);
+        Integer streamId = headers.getInt(HttpConversionUtil.ExtensionHeaderNames.STREAM_ID.text());
         if (streamId == null) {
             LOGGER.error("HttpResponseHandler unexpected message received: " + msg);
             return;
