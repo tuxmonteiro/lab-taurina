@@ -16,10 +16,8 @@
 
 package tuxmonteiro.lab.taurina.services;
 
-import static io.netty.handler.codec.http.HttpHeaderNames.HOST;
-
-import com.fasterxml.jackson.databind.ObjectMapper;
 import io.netty.bootstrap.Bootstrap;
+import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelInitializer;
@@ -34,6 +32,7 @@ import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.codec.http.DefaultFullHttpRequest;
 import io.netty.handler.codec.http.DefaultHttpHeaders;
 import io.netty.handler.codec.http.FullHttpRequest;
+import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpHeaders;
 import io.netty.handler.codec.http.HttpMethod;
 import io.netty.handler.codec.http.HttpVersion;
@@ -50,38 +49,59 @@ import io.netty.handler.ssl.SslContextBuilder;
 import io.netty.handler.ssl.SslProvider;
 import io.netty.handler.ssl.SupportedCipherSuiteFilter;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
-import java.io.IOException;
-import java.net.URI;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Optional;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicLong;
-import javax.net.ssl.SSLException;
+import io.netty.util.concurrent.Promise;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Bean;
+import org.springframework.core.task.TaskExecutor;
+import org.springframework.core.task.support.TaskExecutorAdapter;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.scheduling.annotation.EnableAsync;
 import org.springframework.scheduling.annotation.EnableScheduling;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import tuxmonteiro.lab.taurina.entity.AuthProperty;
+import tuxmonteiro.lab.taurina.entity.RequestProperty;
+import tuxmonteiro.lab.taurina.entity.RootProperty;
+
+import javax.net.ssl.SSLException;
+import java.net.URI;
+import java.nio.charset.Charset;
+import java.util.Base64;
+import java.util.Collections;
+import java.util.Optional;
+import java.util.TreeSet;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+
+import static io.netty.handler.codec.http.HttpHeaderNames.HOST;
 
 @Service
 @EnableAsync
 @EnableScheduling
 public class LoaderService {
 
+    @Bean
+    public TaskExecutor taskExecutor() {
+        return new TaskExecutorAdapter(Executors.newSingleThreadExecutor());
+    }
+
     private final ReportService reportService;
     private final CookieService cookieService;
 
+    @SuppressWarnings("unused")
     enum Proto {
-        HTTPS_1(true),
-        HTTPS_2(true),
-        HTTP_1(false),
-        HTTP_2(false);
+        // @formatter:off
+
+        HTTPS   (true),
+        H2C     (true),
+        HTTP    (false),
+        H2      (false);
+
+        // @formatter:on
 
         private final boolean ssl;
 
@@ -89,51 +109,8 @@ public class LoaderService {
             this.ssl = ssl;
         }
 
-        public SslContext sslContext() {
-            if (ssl) {
-                try {
-                    final SslProvider provider = OpenSsl.isAlpnSupported() ? SslProvider.OPENSSL : SslProvider.JDK;
-                    return SslContextBuilder.forClient()
-                        .sslProvider(provider)
-                        /* NOTE: the cipher filter may not include all ciphers required by the HTTP/2 specification.
-                         * Please refer to the HTTP/2 specification for cipher requirements. */
-                        .ciphers(Http2SecurityUtil.CIPHERS, SupportedCipherSuiteFilter.INSTANCE)
-                        .trustManager(InsecureTrustManagerFactory.INSTANCE)
-                        .applicationProtocolConfig(new ApplicationProtocolConfig(
-                            Protocol.ALPN,
-                            // NO_ADVERTISE is currently the only mode supported by both OpenSsl and JDK providers.
-                            SelectorFailureBehavior.NO_ADVERTISE,
-                            // ACCEPT is currently the only mode supported by both OpenSsl and JDK providers.
-                            SelectedListenerFailureBehavior.ACCEPT,
-                            ApplicationProtocolNames.HTTP_2,
-                            ApplicationProtocolNames.HTTP_1_1))
-                        .build();
-                } catch (SSLException e) {
-                    LOGGER.error(e.getMessage(), e);
-                }
-            }
-            return null;
-        }
-
-        public ChannelInitializer initializer(final ReportService reportService, CookieService cookieService) {
-            if (this == HTTP_2 || this == HTTPS_2) {
-                return new Http2ClientInitializer(sslContext(), Integer.MAX_VALUE, reportService, cookieService);
-            }
-            return new Http1ClientInitializer(sslContext(), reportService, cookieService);
-        }
-
-        public static Proto schemaToProto(String schema) {
-            switch (schema) {
-                case "h2":
-                    return HTTP_2;
-                case "h2c":
-                    return HTTPS_2;
-                case "http":
-                    return HTTP_1;
-                case "https":
-                    return HTTPS_1;
-            }
-            return Proto.valueOf(schema);
+        public boolean isSsl() {
+            return ssl;
         }
     }
 
@@ -141,9 +118,7 @@ public class LoaderService {
     private static final boolean IS_MAC = isMac();
     private static final boolean IS_LINUX = isLinux();
 
-    private static final int NUM_CORES = Runtime.getRuntime().availableProcessors();
-
-    private final ObjectMapper mapper = new ObjectMapper();
+    private long schedPeriod = 50L;
 
     @Autowired
     public LoaderService(ReportService reportService, CookieService cookieService) {
@@ -158,55 +133,49 @@ public class LoaderService {
     private AtomicLong start = new AtomicLong(0L);
 
     @Async
-    @Scheduled(fixedRate = 5_000L)
-    public void start() {
-        if (start.get() != 0) {
-            return;
-        } else {
-            start.set(-1);
-        }
-
+    public void start(final RootProperty rootProperty) {
         EventLoopGroup group = null;
         try {
-            String jsonStr = "{\"uri\":\"http://127.0.0.1:8030\"}";
 
-            HashMap hashMap = mapper.readValue(jsonStr, HashMap.class);
+            final TreeSet<RequestProperty> requestsProperties = requestsProperty(rootProperty);
+            rootProperty.setRequests(requestsProperties);
+            rootProperty.setUri(null);
+            rootProperty.setMethod(null);
+            rootProperty.setHeaders(null);
 
-            String uriStr = (String) hashMap.get("uri");
-            String methodStr = Optional.ofNullable((String) hashMap.get("method")).orElse("GET");
-            HttpMethod method = HttpMethod.valueOf(methodStr);
-            int numConn = Optional.ofNullable((Integer) hashMap.get("numConn")).orElse(10);
-            int durationSec = Optional.ofNullable((Integer) hashMap.get("durationTimeMillis")).orElse(30000) / 1000;
-            URI uriFromJson = URI.create(uriStr);
-            String pathFromURI = uriFromJson.getRawPath();
-            String path = pathFromURI == null || pathFromURI.isEmpty() ? "/" : pathFromURI;
+            LOGGER.info(rootProperty);
 
-            final HttpHeaders headers = new DefaultHttpHeaders()
-                .add(HOST, uriFromJson.getHost() + (uriFromJson.getPort() > 0 ? ":" + uriFromJson.getPort() : ""))
-                .add(HttpConversionUtil.ExtensionHeaderNames.SCHEME.text(), convertSchemeIfNecessary(uriFromJson.getScheme()));
+            AtomicReference<String> scheme = new AtomicReference<>(null);
+            final FullHttpRequest[] requests = convertPropertyToHttpRequest(requestsProperties, scheme);
+            if (scheme.get() == null) {
+                LOGGER.error("Scheme not initialized");
+                return;
+            }
 
-            // TODO: Check cast
-            @SuppressWarnings("unchecked")
-            Map<String, String> headersFromJson = Optional.ofNullable((Map<String, String>) hashMap.get("headers")).orElse(Collections.emptyMap());
-            headersFromJson.forEach(headers::add);
-
-            final FullHttpRequest request = new DefaultFullHttpRequest(
-                HttpVersion.HTTP_1_1, method, path, Unpooled.buffer(0), headers, new DefaultHttpHeaders());
-            int threads = Integer.parseInt(System.getProperty("taurina.threads",
-                String.valueOf(NUM_CORES > numConn ? numConn : NUM_CORES)));
+            int numConn = rootProperty.getNumConn() / rootProperty.getParallelLoaders();
+            @SuppressWarnings("deprecation")
+            int durationSec = Optional.ofNullable(rootProperty.getDurationTimeSec())
+                    .orElse(rootProperty.getDurationTimeMillis() / 1000);
+            int threads = rootProperty.getThreads();
 
             LOGGER.info("Using " + threads + " thread(s)");
 
+            cookieService.saveCookies(rootProperty.getSaveCookies());
             group = getEventLoopGroup(threads);
-            final Proto proto = Proto.schemaToProto(uriFromJson.getScheme());
+            final Proto proto = Proto.valueOf(scheme.get().toUpperCase());
             final Bootstrap bootstrap = newBootstrap(group);
-
             Channel[] channels = new Channel[numConn];
-            activeChanels(numConn, proto, bootstrap, channels, uriFromJson, request);
+            double lastPerformanceRate = reportService.lastPerformanceRate();
+            schedPeriod = Math.max(10L, (long) (schedPeriod * lastPerformanceRate / 1.05));
+
+            LOGGER.info("Sched Period: " + schedPeriod + " us");
+
+            activeChanels(numConn, proto, bootstrap, channels, requests, schedPeriod);
 
             start.set(System.currentTimeMillis());
 
-            reconnectIfNecessary(numConn, proto, group, bootstrap, channels, uriFromJson, request);
+            boolean forceReconnect = rootProperty.getForceReconnect();
+            reconnectIfNecessary(forceReconnect, numConn, proto, group, bootstrap, channels, requests, schedPeriod);
 
             TimeUnit.SECONDS.sleep(durationSec);
 
@@ -214,9 +183,9 @@ public class LoaderService {
             reportService.reset();
             cookieService.reset();
 
-            closeChannels(group, channels, 5, TimeUnit.SECONDS);
+            closeChannels(group, channels, 10, TimeUnit.SECONDS);
 
-        } catch (IOException | InterruptedException e) {
+        } catch (InterruptedException e) {
             if (LOGGER.isDebugEnabled()) {
                 LOGGER.debug(e.getMessage(), e);
             }
@@ -227,9 +196,58 @@ public class LoaderService {
         }
     }
 
-    private void reconnectIfNecessary(int numConn, final Proto proto, final EventLoopGroup group, Bootstrap bootstrap, Channel[] channels, URI uri, FullHttpRequest request) {
-        group.scheduleAtFixedRate(() ->
-            activeChanels(numConn, proto, bootstrap, channels, uri, request), 100, 100, TimeUnit.MICROSECONDS);
+    private FullHttpRequest[] convertPropertyToHttpRequest(final TreeSet<RequestProperty> requestsProperties, final AtomicReference<String> scheme) {
+        final FullHttpRequest[] requests = new FullHttpRequest[requestsProperties.size()];
+        int requestId = 0;
+        for (RequestProperty requestProperty: requestsProperties) {
+            final URI uri = URI.create(requestProperty.getUri());
+            if (scheme.get() == null) {
+                scheme.set(uri.getScheme());
+            }
+            final HttpHeaders headers = new DefaultHttpHeaders()
+                    .add(HOST, uri.getHost() + (uri.getPort() > 0 ? ":" + uri.getPort() : ""))
+                    .add(HttpConversionUtil.ExtensionHeaderNames.SCHEME.text(), convertSchemeIfNecessary(uri.getScheme()));
+            Optional.ofNullable(requestProperty.getHeaders()).orElse(Collections.emptyMap()).forEach(headers::add);
+            AuthProperty authProperty = Optional.ofNullable(requestProperty.getAuth()).orElse(new AuthProperty());
+            final String credentials = authProperty.getCredentials();
+            if (credentials != null && !credentials.isEmpty()) {
+                headers.add(HttpHeaderNames.AUTHORIZATION,
+                        "Basic " + Base64.getEncoder().encodeToString(credentials.getBytes(Charset.defaultCharset())));
+            }
+
+            HttpMethod method = HttpMethod.valueOf(requestProperty.getMethod());
+            String path = uri.getRawPath() == null || uri.getRawPath().isEmpty() ? "/" : uri.getRawPath();
+            final String bodyStr = requestProperty.getBody();
+            ByteBuf body = bodyStr != null && !bodyStr.isEmpty() ?
+                    Unpooled.copiedBuffer(bodyStr.getBytes(Charset.defaultCharset())) : Unpooled.buffer(0);
+
+            requests[requestId] = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, method, path, body, headers, new DefaultHttpHeaders());
+            requestId++;
+        }
+        return requests;
+    }
+
+    private TreeSet<RequestProperty> requestsProperty(RootProperty properties) {
+        RequestProperty singleRequestProperties = new RequestProperty();
+        String uriStr = properties.getUri();
+        boolean singleRequest;
+        if (singleRequest = (uriStr != null && !uriStr.isEmpty())) {
+            singleRequestProperties.setOrder(0);
+            singleRequestProperties.setUri(uriStr);
+            singleRequestProperties.setMethod(properties.getMethod());
+            singleRequestProperties.setBody(properties.getBody());
+            singleRequestProperties.setAuth(properties.getAuth());
+            singleRequestProperties.setHeaders(properties.getHeaders());
+            singleRequestProperties.setSaveCookies(properties.getSaveCookies());
+        }
+        return singleRequest ? new TreeSet<RequestProperty>(){{add(singleRequestProperties);}} : properties.getRequests();
+    }
+
+    private void reconnectIfNecessary(boolean reconnect, int numConn, final Proto proto, final EventLoopGroup group, Bootstrap bootstrap, Channel[] channels, final FullHttpRequest[] requests, long schedPeriod) {
+        if (reconnect) {
+            group.scheduleAtFixedRate(() ->
+                    activeChanels(numConn, proto, bootstrap, channels, requests, schedPeriod), 100, 100, TimeUnit.MICROSECONDS);
+        }
     }
 
     private Bootstrap newBootstrap(EventLoopGroup group) {
@@ -259,7 +277,7 @@ public class LoaderService {
     private void closeChannel(final CountDownLatch latch, final Channel channel) {
         if (channel.isActive()) {
             try {
-                channel.closeFuture().sync();
+                channel.close().await(5, TimeUnit.SECONDS);
             } catch (Exception e) {
                 if (LOGGER.isDebugEnabled()) {
                     LOGGER.debug(e.getMessage(), e);
@@ -270,10 +288,11 @@ public class LoaderService {
         }
     }
 
-    private synchronized void activeChanels(int numConn, final Proto proto, final Bootstrap bootstrap, final Channel[] channels, URI uri, FullHttpRequest request) {
+    private synchronized void activeChanels(int numConn, final Proto proto, final Bootstrap bootstrap, final Channel[] channels, final FullHttpRequest[] requests, long schedPeriod) {
         for (int chanId = 0; chanId < numConn; chanId++) {
             if (channels[chanId] == null || !channels[chanId].isActive()) {
-                Channel channel = newChannel(bootstrap, proto, uri, request);
+
+                Channel channel = newChannel(bootstrap, proto, requests, schedPeriod);
                 if (channel != null) {
                     channels[chanId] = channel;
                 }
@@ -281,21 +300,24 @@ public class LoaderService {
         }
     }
 
-    private Channel newChannel(final Bootstrap bootstrap, Proto proto, URI uri, FullHttpRequest request) {
+    private Channel newChannel(final Bootstrap bootstrap, Proto proto, final FullHttpRequest[] requests, long schedPeriod) {
         try {
+            URI uri = URI.create(proto.name().toLowerCase() + "://" + requests[0].headers().get(HttpHeaderNames.HOST) + requests[0].uri());
             final Channel channel = bootstrap
                                         .clone()
-                                        .handler(proto.initializer(reportService, cookieService))
+                                        .handler(initializer(proto))
                                         .connect(uri.getHost(), uri.getPort())
                                         .sync()
                                         .channel();
             channel.eventLoop().scheduleAtFixedRate(() -> {
                 if (channel.isActive()) {
-                    reportService.writeCounterIncr();
-                    cookieService.applyCookies(request.headers());
-                    channel.writeAndFlush(request.copy());
+                    for (FullHttpRequest request: requests) {
+                        reportService.writeCounterIncr();
+                        cookieService.applyCookies(request.headers());
+                        channel.writeAndFlush(request.copy());
+                    }
                 }
-            }, 50, 50, TimeUnit.MICROSECONDS);
+            }, schedPeriod, schedPeriod, TimeUnit.MICROSECONDS);
             return channel;
         } catch (InterruptedException e) {
             if (LOGGER.isDebugEnabled()) {
@@ -303,6 +325,39 @@ public class LoaderService {
             }
         }
         return null;
+    }
+
+    private SslContext sslContext(boolean ssl) {
+        if (ssl) {
+            try {
+                final SslProvider provider = OpenSsl.isAlpnSupported() ? SslProvider.OPENSSL : SslProvider.JDK;
+                return SslContextBuilder.forClient()
+                        .sslProvider(provider)
+                        /* NOTE: the cipher filter may not include all ciphers required by the HTTP/2 specification.
+                         * Please refer to the HTTP/2 specification for cipher requirements. */
+                        .ciphers(Http2SecurityUtil.CIPHERS, SupportedCipherSuiteFilter.INSTANCE)
+                        .trustManager(InsecureTrustManagerFactory.INSTANCE)
+                        .applicationProtocolConfig(new ApplicationProtocolConfig(
+                                Protocol.ALPN,
+                                // NO_ADVERTISE is currently the only mode supported by both OpenSsl and JDK providers.
+                                SelectorFailureBehavior.NO_ADVERTISE,
+                                // ACCEPT is currently the only mode supported by both OpenSsl and JDK providers.
+                                SelectedListenerFailureBehavior.ACCEPT,
+                                ApplicationProtocolNames.HTTP_2,
+                                ApplicationProtocolNames.HTTP_1_1))
+                        .build();
+            } catch (SSLException e) {
+                LOGGER.error(e.getMessage(), e);
+            }
+        }
+        return null;
+    }
+
+    private ChannelInitializer initializer(Proto proto) {
+        if (proto == Proto.H2 || proto == Proto.H2C) {
+            return new Http2ClientInitializer(sslContext(proto.isSsl()), Integer.MAX_VALUE, reportService, cookieService);
+        }
+        return new Http1ClientInitializer(sslContext(proto.isSsl()), reportService, cookieService);
     }
 
     private EventLoopGroup getEventLoopGroup(int numCores) {

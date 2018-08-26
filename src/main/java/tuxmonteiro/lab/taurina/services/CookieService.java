@@ -14,12 +14,13 @@ import org.springframework.stereotype.Service;
 @Service
 public class CookieService {
 
+    private final AtomicBoolean saveCookies = new AtomicBoolean(false);
     private final List<Cookie> cookies = new CopyOnWriteArrayList<>();
     private final AtomicBoolean cookiesLoaded = new AtomicBoolean(false);
     private final AtomicBoolean cookiesApplied = new AtomicBoolean(false);
 
     public void loadCookies(final HttpHeaders headers) {
-        if (!cookiesLoaded.getAndSet(true)) {
+        if (saveCookies.get() && !cookiesLoaded.getAndSet(true)) {
             List<String> cookiesFromResponse;
             if ((cookiesFromResponse = headers.getAll(HttpHeaderNames.SET_COOKIE)) != null) {
                 cookies.addAll(cookiesFromResponse.stream()
@@ -29,10 +30,14 @@ public class CookieService {
     }
 
     public void applyCookies(final HttpHeaders headers) {
-        if (cookiesLoaded.get() && !cookiesApplied.getAndSet(true)) {
+        if (saveCookies.get() && cookiesLoaded.get() && !cookiesApplied.getAndSet(true)) {
             cookies.forEach(cookie ->
                 headers.add(HttpHeaderNames.COOKIE, ClientCookieEncoder.LAX.encode(cookies)));
         }
+    }
+
+    public synchronized void saveCookies(boolean save) {
+        saveCookies.set(save);
     }
 
     public synchronized void reset() {

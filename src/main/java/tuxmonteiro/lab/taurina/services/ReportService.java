@@ -15,6 +15,8 @@ public class ReportService {
     private final AtomicInteger writeAsync = new AtomicInteger(0);
     private final AtomicInteger connCounter = new AtomicInteger(0);
 
+    private double lastPerformanceRate = 1L;
+
     public void connIncr() {
         connCounter.incrementAndGet();
     }
@@ -42,17 +44,22 @@ public class ReportService {
         connCounter.set(0);
     }
 
+    public double lastPerformanceRate() {
+        return lastPerformanceRate;
+    }
+
     public void showReport(long start) {
         long durationSec = (System.currentTimeMillis() - start) / 1_000L;
         int numResp = responseCounter.get();
         int numWrites = writeAsync.get();
         int sizeTotalKb = sizeAccum.get() / 1024;
+        lastPerformanceRate = (numWrites * 1.0) / (numResp * 1.0);
 
         LOGGER.info("total running : " + durationSec + " sec");
         LOGGER.info("conns: " + connCounter.get());
         LOGGER.info("writes total: " + numWrites);
         LOGGER.info("responses total: " + numResp);
-        LOGGER.info("rate writes/resps: " + (numWrites * 1.0) / (numResp * 1.0));
+        LOGGER.info("rate writes/resps: " + lastPerformanceRate);
         LOGGER.info("size total (kb): " + sizeTotalKb);
         LOGGER.info("rps: " + numResp / durationSec);
         LOGGER.info("size avg (kb/s): " + sizeTotalKb / durationSec);
