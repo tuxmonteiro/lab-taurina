@@ -1,8 +1,23 @@
-package tuxmonteiro.lab.taurina.services;
+/*
+ * Copyright (c) 2017-2018 Globo.com
+ * All rights reserved.
+ *
+ * This source is subject to the Apache License, Version 2.0.
+ * Please see the LICENSE file for more information.
+ *
+ * Authors: See AUTHORS file
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package tuxmonteiro.lab.taurina.handler;
 
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
-import io.netty.channel.ChannelInboundHandler;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelPipeline;
@@ -11,9 +26,10 @@ import io.netty.handler.codec.http.HttpClientCodec;
 import io.netty.handler.codec.http.HttpContentDecompressor;
 import io.netty.handler.ssl.SslContext;
 import io.netty.handler.timeout.IdleStateHandler;
+import tuxmonteiro.lab.taurina.services.CookieService;
+import tuxmonteiro.lab.taurina.services.ReportService;
 
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 public class Http1ClientInitializer extends ChannelInitializer<SocketChannel> {
 
