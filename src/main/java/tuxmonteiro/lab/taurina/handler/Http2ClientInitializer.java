@@ -49,7 +49,7 @@ public class Http2ClientInitializer extends ChannelInitializer<SocketChannel> {
     private final ReportService reportService;
     private final CookieService cookieService;
     private HttpToHttp2ConnectionHandler connectionHandler;
-    private Http2ResponseHandler responseHandler;
+    private Http2ClientHandler responseHandler;
 
     public Http2ClientInitializer(
         SslContext sslCtx,
@@ -75,7 +75,7 @@ public class Http2ClientInitializer extends ChannelInitializer<SocketChannel> {
                                 .build()))
                 .connection(connection)
                 .build();
-        responseHandler = new Http2ResponseHandler(reportService, cookieService);
+        responseHandler = new Http2ClientHandler(reportService, cookieService);
         if (sslCtx != null) {
             configureSsl(ch);
         } else {

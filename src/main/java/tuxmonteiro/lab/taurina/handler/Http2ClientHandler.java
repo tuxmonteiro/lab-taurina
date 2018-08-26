@@ -30,13 +30,13 @@ import tuxmonteiro.lab.taurina.services.CookieService;
 import tuxmonteiro.lab.taurina.services.LoaderService;
 import tuxmonteiro.lab.taurina.services.ReportService;
 
-public class Http2ResponseHandler extends SimpleChannelInboundHandler<FullHttpResponse> {
+public class Http2ClientHandler extends SimpleChannelInboundHandler<FullHttpResponse> {
 
     private static final Log LOGGER = LogFactory.getLog(LoaderService.class);
     private final ReportService reportService;
     private final CookieService cookieService;
 
-    public Http2ResponseHandler(ReportService reportService, CookieService cookieService) {
+    public Http2ClientHandler(ReportService reportService, CookieService cookieService) {
         this.reportService = reportService;
         this.cookieService = cookieService;
     }
