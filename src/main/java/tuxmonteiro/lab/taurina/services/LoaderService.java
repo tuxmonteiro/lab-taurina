@@ -49,7 +49,6 @@ import io.netty.handler.ssl.SslContextBuilder;
 import io.netty.handler.ssl.SslProvider;
 import io.netty.handler.ssl.SupportedCipherSuiteFilter;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
-import io.netty.util.concurrent.Promise;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -60,9 +59,12 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.scheduling.annotation.EnableAsync;
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.stereotype.Service;
+import tuxmonteiro.lab.taurina.common.Proto;
 import tuxmonteiro.lab.taurina.entity.AuthProperty;
 import tuxmonteiro.lab.taurina.entity.RequestProperty;
 import tuxmonteiro.lab.taurina.entity.RootProperty;
+import tuxmonteiro.lab.taurina.handler.Http1ClientInitializer;
+import tuxmonteiro.lab.taurina.handler.Http2ClientInitializer;
 
 import javax.net.ssl.SSLException;
 import java.net.URI;
@@ -91,28 +93,6 @@ public class LoaderService {
 
     private final ReportService reportService;
     private final CookieService cookieService;
-
-    @SuppressWarnings("unused")
-    enum Proto {
-        // @formatter:off
-
-        HTTPS   (true),
-        H2C     (true),
-        HTTP    (false),
-        H2      (false);
-
-        // @formatter:on
-
-        private final boolean ssl;
-
-        Proto(boolean ssl) {
-            this.ssl = ssl;
-        }
-
-        public boolean isSsl() {
-            return ssl;
-        }
-    }
 
     private static final Log LOGGER = LogFactory.getLog(LoaderService.class);
     private static final boolean IS_MAC = isMac();

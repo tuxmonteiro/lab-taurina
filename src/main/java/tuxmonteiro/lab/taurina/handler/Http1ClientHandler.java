@@ -48,7 +48,7 @@ class Http1ClientHandler extends SimpleChannelInboundHandler<HttpObject> {
     }
 
     @Override
-    public void channelRead0(ChannelHandlerContext channelHandlerContext, HttpObject msg) throws Exception {
+    public void channelRead0(ChannelHandlerContext ctx, HttpObject msg) throws Exception {
 
         if (msg instanceof HttpResponse) {
             reportService.responseIncr();
