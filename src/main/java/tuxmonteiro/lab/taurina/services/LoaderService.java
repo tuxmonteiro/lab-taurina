@@ -150,7 +150,7 @@ public class LoaderService {
 
             LOGGER.info("Sched Period: " + schedPeriod + " us");
 
-            activeChanels(numConn, proto, bootstrap, channels, requests, schedPeriod);
+            activeChannels(numConn, proto, bootstrap, channels, requests, schedPeriod);
 
             start.set(System.currentTimeMillis());
 
@@ -226,7 +226,7 @@ public class LoaderService {
     private void reconnectIfNecessary(boolean reconnect, int numConn, final Proto proto, final EventLoopGroup group, Bootstrap bootstrap, Channel[] channels, final FullHttpRequest[] requests, long schedPeriod) {
         if (reconnect) {
             group.scheduleAtFixedRate(() ->
-                    activeChanels(numConn, proto, bootstrap, channels, requests, schedPeriod), 100, 100, TimeUnit.MICROSECONDS);
+                    activeChannels(numConn, proto, bootstrap, channels, requests, schedPeriod), 100, 100, TimeUnit.MICROSECONDS);
         }
     }
 
@@ -268,7 +268,7 @@ public class LoaderService {
         }
     }
 
-    private synchronized void activeChanels(int numConn, final Proto proto, final Bootstrap bootstrap, final Channel[] channels, final FullHttpRequest[] requests, long schedPeriod) {
+    private synchronized void activeChannels(int numConn, final Proto proto, final Bootstrap bootstrap, final Channel[] channels, final FullHttpRequest[] requests, long schedPeriod) {
         for (int chanId = 0; chanId < numConn; chanId++) {
             if (channels[chanId] == null || !channels[chanId].isActive()) {
 
