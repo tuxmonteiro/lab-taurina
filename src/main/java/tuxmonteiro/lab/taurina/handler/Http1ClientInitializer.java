@@ -35,6 +35,7 @@ public class Http1ClientInitializer extends ChannelInitializer<SocketChannel> {
 
     private final SslContext sslContext;
     private final ChannelHandler handler;
+    private final ReportService reportService;
 
     public Http1ClientInitializer(
         SslContext sslContext,
@@ -42,6 +43,7 @@ public class Http1ClientInitializer extends ChannelInitializer<SocketChannel> {
         CookieService cookieService) {
 
         this.sslContext = sslContext;
+        this.reportService = reportService;
         this.handler = new Http1ClientHandler(reportService, cookieService);
     }
 
@@ -49,6 +51,7 @@ public class Http1ClientInitializer extends ChannelInitializer<SocketChannel> {
     protected void initChannel(SocketChannel channel) throws Exception {
         final ChannelPipeline pipeline = channel.pipeline();
         pipeline.addLast(new IdleStateHandler(10, 10, 0, TimeUnit.SECONDS));
+        pipeline.addLast(new TrafficHandler(reportService));
         if (sslContext != null) {
             pipeline.addLast(sslContext.newHandler(channel.alloc()));
         }
@@ -58,7 +61,7 @@ public class Http1ClientInitializer extends ChannelInitializer<SocketChannel> {
         pipeline.addLast(new ChannelInboundHandlerAdapter() {
             @Override
             public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
-                // ignore
+                reportService.failedIncr(cause);
             }
         });
     }

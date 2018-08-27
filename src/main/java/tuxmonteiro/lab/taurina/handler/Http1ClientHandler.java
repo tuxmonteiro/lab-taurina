@@ -22,10 +22,14 @@ import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.handler.codec.http.HttpContent;
 import io.netty.handler.codec.http.HttpObject;
 import io.netty.handler.codec.http.HttpResponse;
+import io.netty.handler.codec.http.HttpResponseStatus;
+import io.netty.handler.codec.http.LastHttpContent;
 import tuxmonteiro.lab.taurina.services.CookieService;
 import tuxmonteiro.lab.taurina.services.ReportService;
 
 class Http1ClientHandler extends SimpleChannelInboundHandler<HttpObject> {
+
+    private static final int MAX_RESPONSE_STATUS = 599;
 
     private final ReportService reportService;
     private final CookieService cookieService;
@@ -51,18 +55,13 @@ class Http1ClientHandler extends SimpleChannelInboundHandler<HttpObject> {
     public void channelRead0(ChannelHandlerContext ctx, HttpObject msg) throws Exception {
 
         if (msg instanceof HttpResponse) {
-            reportService.responseIncr();
             HttpResponse response = (HttpResponse) msg;
-            cookieService.loadCookies(response.headers());
-            reportService.bodySizeAccumalator(response.toString().length());
-        }
-
-        if (msg instanceof HttpContent) {
-            HttpContent content = (HttpContent) msg;
-            ByteBuf byteBuf = content.content();
-            if (byteBuf.isReadable()) {
-                reportService.bodySizeAccumalator(byteBuf.readableBytes());
+            final int statusCode = response.status().code();
+            if (statusCode >= HttpResponseStatus.CONTINUE.code() && statusCode <= MAX_RESPONSE_STATUS) {
+                reportService.statusIncr(statusCode);
             }
+            cookieService.loadCookies(response.headers());
+            reportService.bodySizeAccumulator(response.toString().length());
         }
     }
 

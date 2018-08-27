@@ -75,6 +75,7 @@ import java.util.Optional;
 import java.util.TreeSet;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -91,12 +92,15 @@ public class LoaderService {
         return new TaskExecutorAdapter(Executors.newSingleThreadExecutor());
     }
 
-    private final ReportService reportService;
-    private final CookieService cookieService;
-
     private static final Log LOGGER = LogFactory.getLog(LoaderService.class);
+
     private static final boolean IS_MAC = isMac();
     private static final boolean IS_LINUX = isLinux();
+
+    private final ScheduledThreadPoolExecutor executor = new ScheduledThreadPoolExecutor(1);
+
+    private final ReportService reportService;
+    private final CookieService cookieService;
 
     private long schedPeriod = 50L;
 
@@ -114,7 +118,6 @@ public class LoaderService {
 
     @Async
     public void start(final RootProperty rootProperty) {
-        EventLoopGroup group = null;
         try {
 
             final TreeSet<RequestProperty> requestsProperties = requestsProperty(rootProperty);
@@ -141,37 +144,35 @@ public class LoaderService {
             LOGGER.info("Using " + threads + " thread(s)");
 
             cookieService.saveCookies(rootProperty.getSaveCookies());
-            group = getEventLoopGroup(threads);
+            final EventLoopGroup group = getEventLoopGroup(threads);
             final Proto proto = Proto.valueOf(scheme.get().toUpperCase());
-            final Bootstrap bootstrap = newBootstrap(group);
+            final Bootstrap bootstrap = newBootstrap(group, rootProperty.getConnectTimeout());
             Channel[] channels = new Channel[numConn];
             double lastPerformanceRate = reportService.lastPerformanceRate();
-            schedPeriod = Math.max(10L, (long) (schedPeriod * lastPerformanceRate / 1.05));
+            schedPeriod = Math.min(100, Math.max(10L, (long) (schedPeriod * lastPerformanceRate / 1.05)));
 
             LOGGER.info("Sched Period: " + schedPeriod + " us");
 
             activeChannels(numConn, proto, bootstrap, channels, requests, schedPeriod);
 
             start.set(System.currentTimeMillis());
+            executor.schedule(() -> {
+                long now = System.currentTimeMillis();
+
+                closeChannels(channels, 10, TimeUnit.SECONDS);
+                group.shutdownGracefully(1L, 10L, TimeUnit.SECONDS);
+
+                reportService.showReport(start.get() - (System.currentTimeMillis() - now));
+                reportService.reset();
+                cookieService.reset();
+            }, durationSec, TimeUnit.SECONDS);
 
             boolean forceReconnect = rootProperty.getForceReconnect();
             reconnectIfNecessary(forceReconnect, numConn, proto, group, bootstrap, channels, requests, schedPeriod);
 
-            TimeUnit.SECONDS.sleep(durationSec);
-
-            reportService.showReport(start.get());
-            reportService.reset();
-            cookieService.reset();
-
-            closeChannels(group, channels, 10, TimeUnit.SECONDS);
-
-        } catch (InterruptedException e) {
+        } catch (Exception e) {
             if (LOGGER.isDebugEnabled()) {
                 LOGGER.debug(e.getMessage(), e);
-            }
-        } finally {
-            if (group != null && !group.isShuttingDown()) {
-                group.shutdownGracefully();
             }
         }
     }
@@ -224,46 +225,44 @@ public class LoaderService {
     }
 
     private void reconnectIfNecessary(boolean reconnect, int numConn, final Proto proto, final EventLoopGroup group, Bootstrap bootstrap, Channel[] channels, final FullHttpRequest[] requests, long schedPeriod) {
-        if (reconnect) {
-            group.scheduleAtFixedRate(() ->
-                    activeChannels(numConn, proto, bootstrap, channels, requests, schedPeriod), 100, 100, TimeUnit.MICROSECONDS);
+        while (reconnect && !group.isShutdown() && !group.isShuttingDown()) {
+            activeChannels(numConn, proto, bootstrap, channels, requests, schedPeriod);
+            try {
+                TimeUnit.MILLISECONDS.sleep(100);
+            } catch (InterruptedException e) {
+                // ignored
+            }
         }
     }
 
-    private Bootstrap newBootstrap(EventLoopGroup group) {
+    private Bootstrap newBootstrap(EventLoopGroup group, int connectTimeout) {
         Bootstrap bootstrap = new Bootstrap();
         bootstrap.
             group(group).
             channel(getSocketChannelClass()).
             option(ChannelOption.SO_KEEPALIVE, true).
-            option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 60000).
+            option(ChannelOption.CONNECT_TIMEOUT_MILLIS, connectTimeout).
             option(ChannelOption.TCP_NODELAY, true).
             option(ChannelOption.SO_REUSEADDR, true);
         return bootstrap;
     }
 
-    private void closeChannels(EventLoopGroup group, Channel[] channels, int timeout, TimeUnit unit) throws InterruptedException {
+    private void closeChannels(Channel[] channels, int timeout, TimeUnit unit) {
         CountDownLatch latch = new CountDownLatch(channels.length - 1);
         for (Channel channel : channels) {
-            group.execute(() -> {
-                closeChannel(latch, channel);
-            });
-        }
-        latch.await(timeout, unit);
-    }
-
-
-
-    private void closeChannel(final CountDownLatch latch, final Channel channel) {
-        if (channel.isActive()) {
             try {
-                channel.close().await(5, TimeUnit.SECONDS);
-            } catch (Exception e) {
-                if (LOGGER.isDebugEnabled()) {
-                    LOGGER.debug(e.getMessage(), e);
+                if (channel != null && channel.isActive()) {
+                    channel.close();
                 }
             } finally {
                 latch.countDown();
+            }
+        }
+        try {
+            latch.await(timeout, unit);
+        } catch (InterruptedException e) {
+            if (LOGGER.isDebugEnabled()) {
+                LOGGER.debug(e.getMessage(), e);
             }
         }
     }
@@ -282,24 +281,27 @@ public class LoaderService {
 
     private Channel newChannel(final Bootstrap bootstrap, Proto proto, final FullHttpRequest[] requests, long schedPeriod) {
         try {
-            URI uri = URI.create(proto.name().toLowerCase() + "://" + requests[0].headers().get(HttpHeaderNames.HOST) + requests[0].uri());
-            final Channel channel = bootstrap
-                                        .clone()
-                                        .handler(initializer(proto))
-                                        .connect(uri.getHost(), uri.getPort())
-                                        .sync()
-                                        .channel();
-            channel.eventLoop().scheduleAtFixedRate(() -> {
-                if (channel.isActive()) {
-                    for (FullHttpRequest request: requests) {
-                        reportService.writeCounterIncr();
-                        cookieService.applyCookies(request.headers());
-                        channel.writeAndFlush(request.copy());
+            if (!bootstrap.config().group().isShuttingDown() && !bootstrap.config().group().isShutdown()) {
+                URI uri = URI.create(proto.name().toLowerCase() + "://" + requests[0].headers().get(HttpHeaderNames.HOST) + requests[0].uri());
+                final Channel channel = bootstrap
+                        .clone()
+                        .handler(initializer(proto))
+                        .connect(uri.getHost(), uri.getPort())
+                        .sync()
+                        .channel();
+                channel.eventLoop().scheduleAtFixedRate(() -> {
+                    if (channel.isActive()) {
+                        for (FullHttpRequest request : requests) {
+                            reportService.writeCounterIncr();
+                            cookieService.applyCookies(request.headers());
+                            channel.writeAndFlush(request.copy());
+                        }
                     }
-                }
-            }, schedPeriod, schedPeriod, TimeUnit.MICROSECONDS);
-            return channel;
-        } catch (InterruptedException e) {
+                }, schedPeriod, schedPeriod, TimeUnit.MICROSECONDS);
+                return channel;
+            }
+        } catch (Exception e) {
+            reportService.failedIncr(e);
             if (LOGGER.isDebugEnabled()) {
                 LOGGER.debug(e.getMessage(), e);
             }

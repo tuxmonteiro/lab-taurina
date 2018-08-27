@@ -21,6 +21,7 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.handler.codec.http.FullHttpResponse;
 import io.netty.handler.codec.http.HttpHeaders;
+import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.handler.codec.http2.HttpConversionUtil;
 import io.netty.util.CharsetUtil;
 
@@ -31,6 +32,8 @@ import tuxmonteiro.lab.taurina.services.LoaderService;
 import tuxmonteiro.lab.taurina.services.ReportService;
 
 public class Http2ClientHandler extends SimpleChannelInboundHandler<FullHttpResponse> {
+
+    private static final int MAX_RESPONSE_STATUS = 599;
 
     private static final Log LOGGER = LogFactory.getLog(LoaderService.class);
     private final ReportService reportService;
@@ -56,18 +59,21 @@ public class Http2ClientHandler extends SimpleChannelInboundHandler<FullHttpResp
     @Override
     protected void channelRead0(ChannelHandlerContext ctx, FullHttpResponse msg) throws Exception {
         HttpHeaders headers = msg.headers();
-        cookieService.loadCookies(headers);
         Integer streamId = headers.getInt(HttpConversionUtil.ExtensionHeaderNames.STREAM_ID.text());
         if (streamId == null) {
             LOGGER.error("HttpResponseHandler unexpected message received: " + msg);
             return;
         }
+        cookieService.loadCookies(headers);
+        final int statusCode = msg.status().code();
+        if (statusCode >= HttpResponseStatus.CONTINUE.code() && statusCode <= MAX_RESPONSE_STATUS) {
+            reportService.statusIncr(statusCode);
+        }
 
         final ByteBuf content = msg.content();
         if (content.isReadable()) {
             int contentLength = content.readableBytes();
-            reportService.bodySizeAccumalator(contentLength);
-            reportService.responseIncr();
+//            reportService.bodySizeAccumulator(contentLength);
             if (LOGGER.isDebugEnabled()) {
                 byte[] arr = new byte[contentLength];
                 content.readBytes(arr);

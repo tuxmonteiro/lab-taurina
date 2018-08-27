@@ -88,6 +88,7 @@ public class Http2ClientInitializer extends ChannelInitializer<SocketChannel> {
      */
     private void configureSsl(SocketChannel ch) {
         ChannelPipeline pipeline = ch.pipeline();
+        pipeline.addLast(new TrafficHandler(reportService));
         pipeline.addLast(sslCtx.newHandler(ch.alloc()));
         // We must wait for the handshake to finish and the protocol to be negotiated before configuring
         // the HTTP/2 components of the pipeline.
@@ -98,10 +99,28 @@ public class Http2ClientInitializer extends ChannelInitializer<SocketChannel> {
                     ChannelPipeline p = ctx.pipeline();
                     p.addLast(connectionHandler);
                     p.addLast(responseHandler);
+                    p.addLast(new ChannelInboundHandlerAdapter() {
+                        @Override
+                        public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
+                            reportService.failedIncr(cause);
+                        }
+                    });
                     return;
                 }
                 ctx.close();
                 throw new IllegalStateException("unknown protocol: " + protocol);
+            }
+
+            @Override
+            protected void handshakeFailure(ChannelHandlerContext ctx, Throwable cause) throws Exception {
+                reportService.failedIncr(cause);
+                ctx.close();
+            }
+
+            @Override
+            public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
+                reportService.failedIncr(cause);
+                ctx.close();
             }
         });
     }
@@ -115,6 +134,7 @@ public class Http2ClientInitializer extends ChannelInitializer<SocketChannel> {
         HttpClientUpgradeHandler upgradeHandler = new HttpClientUpgradeHandler(sourceCodec, upgradeCodec, 65536);
 
         ch.pipeline().addLast(
+                new TrafficHandler(reportService),
                 sourceCodec,
                 upgradeHandler,
                 new UpgradeRequestHandler(),
@@ -136,6 +156,12 @@ public class Http2ClientInitializer extends ChannelInitializer<SocketChannel> {
             final ChannelPipeline pipeline = ctx.pipeline();
             pipeline.remove(this);
             pipeline.addLast(responseHandler);
+            pipeline.addLast(new ChannelInboundHandlerAdapter() {
+                @Override
+                public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
+                    reportService.failedIncr(cause);
+                }
+            });
         }
     }
 
