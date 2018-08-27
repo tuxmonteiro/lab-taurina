@@ -109,22 +109,24 @@ public class LoaderService {
             String bodyStr = (String) hashMap.get("body");
             ByteBuf body = Unpooled.copiedBuffer(bodyStr == null ? new byte[0] : bodyStr.getBytes());
 
-            Map auth =  Optional.ofNullable((Map) hashMap.get("auth")).orElse(Collections.emptyMap());
+            Map auth = Optional.ofNullable((Map) hashMap.get("auth")).orElse(Collections.emptyMap());
 
             final HttpHeaders headers = new DefaultHttpHeaders()
                 .add(HOST, uriFromJson.getHost() + (uriFromJson.getPort() > 0 ? ":" + uriFromJson.getPort() : ""))
-                .add(HttpConversionUtil.ExtensionHeaderNames.SCHEME.text(), convertSchemeIfNecessary(uriFromJson.getScheme()));
+                .add(HttpConversionUtil.ExtensionHeaderNames.SCHEME.text(),
+                    convertSchemeIfNecessary(uriFromJson.getScheme()));
 
             String credentials = (String) auth.get("credentials");
 
-            if(credentials != null){
-               String a =  Base64.getEncoder().encode(credentials.getBytes()).toString();
-                headers.add(HttpHeaderNames.AUTHORIZATION ,"Basic".concat(a));
+            if (credentials != null) {
+                String a = Base64.getEncoder().encode(credentials.getBytes()).toString();
+                headers.add(HttpHeaderNames.AUTHORIZATION, "Basic".concat(a));
             }
 
             // TODO: Check cast
             @SuppressWarnings("unchecked")
-            Map<String, String> headersFromJson = Optional.ofNullable((Map<String, String>) hashMap.get("headers")).orElse(Collections.emptyMap());
+            Map<String, String> headersFromJson = Optional.ofNullable((Map<String, String>) hashMap.get("headers"))
+                .orElse(Collections.emptyMap());
             headersFromJson.forEach(headers::add);
 
             final FullHttpRequest request = new DefaultFullHttpRequest(
@@ -136,14 +138,15 @@ public class LoaderService {
 
             group = channelManager.getEventLoopGroup(threads);
             final Proto proto = Proto.schemaToProto(uriFromJson.getScheme());
-            final Bootstrap bootstrap = newBootstrap(group);
+            final Bootstrap bootstrap = channelManager.newBootstrap(group);
 
             Channel[] channels = new Channel[numConn];
-            channelManager.activeChanels(numConn, proto, bootstrap, channels, uriFromJson, request,reportService);
+            channelManager.activeChanels(numConn, proto, bootstrap, channels, uriFromJson, request, reportService);
 
             start.set(System.currentTimeMillis());
 
-            channelManager.reconnectIfNecessary(numConn, proto, group, bootstrap, channels, uriFromJson, request,reportService);
+            channelManager
+                .reconnectIfNecessary(numConn, proto, group, bootstrap, channels, uriFromJson, request, reportService);
 
             TimeUnit.SECONDS.sleep(durationSec);
 
@@ -163,15 +166,4 @@ public class LoaderService {
         }
     }
 
-    private Bootstrap newBootstrap(EventLoopGroup group) {
-        Bootstrap bootstrap = new Bootstrap();
-        bootstrap.
-            group(group).
-            channel(channelManager.getSocketChannelClass()).
-            option(ChannelOption.SO_KEEPALIVE, true).
-            option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 60000).
-            option(ChannelOption.TCP_NODELAY, true).
-            option(ChannelOption.SO_REUSEADDR, true);
-        return bootstrap;
-    }
 }

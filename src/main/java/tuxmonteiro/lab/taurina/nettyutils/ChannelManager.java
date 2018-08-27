@@ -3,6 +3,7 @@ package tuxmonteiro.lab.taurina.nettyutils;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelInitializer;
+import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.epoll.EpollEventLoopGroup;
 import io.netty.channel.epoll.EpollSocketChannel;
@@ -42,7 +43,7 @@ public class ChannelManager {
     private static final boolean IS_LINUX = isLinux();
     private ReportService reportService;
 
-    public ChannelManager (ReportService reportService){
+    public ChannelManager(ReportService reportService) {
         this.reportService = reportService;
     }
 
@@ -53,14 +54,16 @@ public class ChannelManager {
                           NioSocketChannel.class;
         // @formatter:on
     }
-    public Channel newChannel(final Bootstrap bootstrap, Proto proto, URI uri, FullHttpRequest request,ReportService reportService) {
+
+    public Channel newChannel(final Bootstrap bootstrap, Proto proto, URI uri, FullHttpRequest request,
+        ReportService reportService) {
         try {
             final Channel channel = bootstrap
                 .clone()
-                .handler(initializer(reportService,proto))
+                .handler(initializer(reportService, proto))
                 .connect(uri.getHost(), uri.getPort())
                 .sync()
-                .channel() ;
+                .channel();
             channel.eventLoop().scheduleAtFixedRate(() -> {
                 if (channel.isActive()) {
                     reportService.writeAsyncIncr();
@@ -76,10 +79,11 @@ public class ChannelManager {
         return null;
     }
 
-    public synchronized void activeChanels(int numConn, final Proto proto, final Bootstrap bootstrap, final Channel[] channels, URI uri, FullHttpRequest request,ReportService reportService) {
+    public synchronized void activeChanels(int numConn, final Proto proto, final Bootstrap bootstrap,
+        final Channel[] channels, URI uri, FullHttpRequest request, ReportService reportService) {
         for (int chanId = 0; chanId < numConn; chanId++) {
             if (channels[chanId] == null || !channels[chanId].isActive()) {
-                Channel channel = newChannel(bootstrap, proto, uri, request,reportService);
+                Channel channel = newChannel(bootstrap, proto, uri, request, reportService);
                 if (channel != null) {
                     channels[chanId] = channel;
                 }
@@ -88,7 +92,8 @@ public class ChannelManager {
     }
 
 
-    public void closeChannels(EventLoopGroup group, Channel[] channels, int timeout, TimeUnit unit) throws InterruptedException {
+    public void closeChannels(EventLoopGroup group, Channel[] channels, int timeout, TimeUnit unit)
+        throws InterruptedException {
         CountDownLatch latch = new CountDownLatch(channels.length - 1);
         for (Channel channel : channels) {
             group.execute(() -> {
@@ -141,11 +146,12 @@ public class ChannelManager {
         return result;
     }
 
-    public void reconnectIfNecessary(int numConn, final Proto proto, final EventLoopGroup group, Bootstrap bootstrap, Channel[] channels, URI uri, FullHttpRequest request,final ReportService reportService) {
+    public void reconnectIfNecessary(int numConn, final Proto proto, final EventLoopGroup group, Bootstrap bootstrap,
+        Channel[] channels, URI uri, FullHttpRequest request, final ReportService reportService) {
         group.scheduleAtFixedRate(() ->
-          activeChanels(numConn, proto, bootstrap, channels, uri, request,reportService), 100, 100, TimeUnit.MICROSECONDS);
+                activeChanels(numConn, proto, bootstrap, channels, uri, request, reportService), 100, 100,
+            TimeUnit.MICROSECONDS);
     }
-
 
     public SslContext sslContext(Boolean ssl) {
         if (ssl) {
@@ -173,7 +179,7 @@ public class ChannelManager {
         return null;
     }
 
-    public ChannelInitializer initializer(final ReportService reportService,Proto proto) {
+    public ChannelInitializer initializer(final ReportService reportService, Proto proto) {
         if (proto == Proto.HTTP_2) {
             return new Http2ClientInitializer(sslContext(Boolean.FALSE), Integer.MAX_VALUE, reportService);
         }
@@ -188,6 +194,17 @@ public class ChannelManager {
         return new Http1ClientInitializer(sslContext(Boolean.FALSE), reportService);
     }
 
+    public Bootstrap newBootstrap(EventLoopGroup group) {
+        Bootstrap bootstrap = new Bootstrap();
+        bootstrap.
+            group(group).
+            channel(getSocketChannelClass()).
+            option(ChannelOption.SO_KEEPALIVE, true).
+            option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 60000).
+            option(ChannelOption.TCP_NODELAY, true).
+            option(ChannelOption.SO_REUSEADDR, true);
+        return bootstrap;
+    }
 
     public ReportService getReportService() {
         return reportService;
