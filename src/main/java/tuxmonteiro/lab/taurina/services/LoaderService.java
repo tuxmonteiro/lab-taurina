@@ -93,7 +93,7 @@ public class LoaderService {
         channelManager = new ChannelManager(reportService);
         EventLoopGroup group = null;
         try {
-            String jsonStr = "{\"uri\":\"http://127.0.0.1:8030\", \"method\":\"POST\", \"body\" :\"\" }";
+            String jsonStr = "{\"uri\":\"http://127.0.0.1:8031\", \"method\":\"POST\", \"body\" :\"\" }";
 
             HashMap hashMap = mapper.readValue(jsonStr, HashMap.class);
 
@@ -139,11 +139,11 @@ public class LoaderService {
             final Bootstrap bootstrap = newBootstrap(group);
 
             Channel[] channels = new Channel[numConn];
-            channelManager.activeChanels(numConn, proto, bootstrap, channels, uriFromJson, request);
+            channelManager.activeChanels(numConn, proto, bootstrap, channels, uriFromJson, request,reportService);
 
             start.set(System.currentTimeMillis());
 
-            channelManager.reconnectIfNecessary(numConn, proto, group, bootstrap, channels, uriFromJson, request);
+            channelManager.reconnectIfNecessary(numConn, proto, group, bootstrap, channels, uriFromJson, request,reportService);
 
             TimeUnit.SECONDS.sleep(durationSec);
 
